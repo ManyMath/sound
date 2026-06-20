@@ -9,6 +9,8 @@ library;
 export 'src/backends/silent_backend.dart';
 export 'src/exceptions.dart';
 export 'src/fade.dart';
+export 'src/pcm.dart';
+export 'src/pcm_tap.dart';
 export 'src/playback.dart';
 export 'src/sound.dart';
 export 'src/sound_backend.dart';

@@ -5,6 +5,8 @@ import 'package:http/http.dart' as http;
 import 'backends/native/native_backend.dart';
 import 'backends/silent_backend.dart';
 import 'exceptions.dart';
+import 'pcm.dart';
+import 'pcm_tap.dart' as pcm_tap;
 import 'playback.dart';
 import 'sound_backend.dart';
 import 'sound_source.dart';
@@ -189,6 +191,19 @@ class Sound {
     if (dot < 0 || dot < slash || dot == path.length - 1) return null;
     return path.substring(dot + 1).toLowerCase();
   }
+
+  /// Opens [source] as a [PcmStream] of decoded frames without playing it.
+  ///
+  /// This is the playback-path "tap": the clip is pulled as data (to mix,
+  /// analyze, or re-route) rather than sent to an audio device, so it works
+  /// under any backend, including [SilentBackend]. 16-bit PCM WAV is decoded in
+  /// pure Dart; compressed formats are a roadmap item. [chunkFrames] sets how
+  /// many frames each emitted Int16List carries. Throws
+  /// [UnsupportedSourceException] for a source the tap cannot decode.
+  static Future<PcmStream> openPcmStream(
+    SoundSource source, {
+    int chunkFrames = 2048,
+  }) => pcm_tap.openPcmStream(source, chunkFrames: chunkFrames);
 
   /// Disposes the active backend and clears selection/registry.
   ///
