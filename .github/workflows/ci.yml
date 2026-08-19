@@ -28,10 +28,24 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
-      # The crate must also compile for Android (AAudio backend)...
+      # The crate must also compile for Android (AAudio backend). `ring`
+      # (rustls's crypto backend, for https:// streaming) builds some
+      # primitives from C, so the cross-compile check needs a real Android
+      # NDK clang, not just the Rust target added by rustup.
+      - name: Install Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r27
       - run: rustup target add aarch64-linux-android
       - run: cargo check --target aarch64-linux-android
+        env:
+          CC_aarch64_linux_android: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang
+          AR_aarch64_linux_android: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
       # ...and for Windows, where it currently falls back to a stub backend.
+      # Same `ring` caveat: needs a real mingw-w64 GCC, not just the Rust
+      # target.
+      - run: sudo apt-get update && sudo apt-get install -y mingw-w64
       - run: rustup target add x86_64-pc-windows-gnu
       - run: cargo check --target x86_64-pc-windows-gnu
 

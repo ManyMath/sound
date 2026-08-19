@@ -3,6 +3,12 @@ enum PlaybackState {
   /// Loaded but not yet started.
   idle,
 
+  /// A [SoundSource.uri] voice that has started but is still connecting,
+  /// probing the stream's format, and decoding its first chunk - no audio
+  /// has played yet. Backends without a connect phase (bytes/file sources,
+  /// WebAudio) never emit this; they go straight to [playing].
+  connecting,
+
   /// Currently producing audio.
   playing,
 
@@ -58,6 +64,11 @@ abstract class Playback {
   Duration get position;
 
   /// The total length of the audio, or `null` if not known.
+  ///
+  /// For a [SoundSource.uri] still downloading, this reflects how much has
+  /// decoded *so far* and grows during playback until the stream finishes -
+  /// the same way a browser's `<audio>`/`<video>` element reports a growing
+  /// duration for streamed media before the full length is known.
   Duration? get duration;
 
   /// Completes when playback reaches the end on its own.

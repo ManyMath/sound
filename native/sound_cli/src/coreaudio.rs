@@ -10,8 +10,9 @@
 //! on underrun.
 
 use std::os::raw::{c_int, c_void};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use libloading::Library;
 
@@ -64,7 +65,6 @@ type FnEnqueue =
 type FnStart = unsafe extern "C" fn(AudioQueueRef, *mut c_void) -> c_int;
 type FnStop = unsafe extern "C" fn(AudioQueueRef, u8) -> c_int;
 type FnDispose = unsafe extern "C" fn(AudioQueueRef, u8) -> c_int;
-type FnFreeBuffer = unsafe extern "C" fn(AudioQueueRef, AudioQueueBufferRef) -> c_int;
 
 pub struct CoreAudio {
     _lib: Library,
@@ -74,7 +74,6 @@ pub struct CoreAudio {
     start: FnStart,
     stop: FnStop,
     dispose: FnDispose,
-    free_buffer: FnFreeBuffer,
 }
 
 unsafe impl Send for CoreAudio {}
@@ -115,7 +114,6 @@ impl CoreAudio {
                 start: sym!(b"AudioQueueStart\0"),
                 stop: sym!(b"AudioQueueStop\0"),
                 dispose: sym!(b"AudioQueueDispose\0"),
-                free_buffer: sym!(b"AudioQueueFreeBuffer\0"),
                 _lib: lib,
             })
         }
@@ -127,9 +125,13 @@ impl CoreAudio {
 struct Channel {
     rx: Mutex<Receiver<Vec<i16>>>,
     enqueue: FnEnqueue,
-    // Tracks frames the callback has fed the device, so `drain` can wait for
-    // exactly the amount the producer has pushed.
-    frames_drained: std::sync::atomic::AtomicU64,
+    // Carry-over samples from a chunk that did not fit the last buffer, drained
+    // before pulling the next chunk (chunks are not always buffer-aligned).
+    pending: Mutex<Vec<i16>>,
+    // Tracks interleaved samples the callback has fed the device, so `drain`
+    // can wait for exactly the amount the producer has pushed.
+    samples_drained: AtomicU64,
+    closed: AtomicBool,
 }
 
 unsafe impl Send for Channel {}
@@ -140,14 +142,21 @@ pub struct CoreAudioPlayback<'a> {
     queue: AudioQueueRef,
     tx: SyncSender<Vec<i16>>,
     channel: Box<Channel>,
-    started: std::cell::Cell<bool>,
+    started: AtomicBool,
     channels: u32,
-    frames_written: std::cell::Cell<u64>,
+    frames_written: AtomicU64,
     buffers: Vec<AudioQueueBufferRef>,
 }
 
 const RING_BUFFERS: u32 = 4;
 const FRAMES_PER_BUFFER: u32 = 2048;
+
+/// Locks ignoring poisoning: these mutexes guard plain data (no invariants a
+/// panic could break), and the render callback must never panic itself, which
+/// `unwrap()` on a poisoned lock would.
+fn lock_unpoisoned<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 impl<'a> CoreAudioPlayback<'a> {
     pub fn open(ca: &'a CoreAudio, channels: u32, rate: u32) -> Result<Self, String> {
@@ -168,7 +177,9 @@ impl<'a> CoreAudioPlayback<'a> {
         let channel = Box::new(Channel {
             rx: Mutex::new(rx),
             enqueue: ca.enqueue,
-            frames_drained: std::sync::atomic::AtomicU64::new(0),
+            pending: Mutex::new(Vec::new()),
+            samples_drained: AtomicU64::new(0),
+            closed: AtomicBool::new(false),
         });
         let user_data = &*channel as *const Channel as *mut c_void;
         unsafe {
@@ -206,27 +217,46 @@ impl<'a> CoreAudioPlayback<'a> {
                 queue,
                 tx,
                 channel,
-                started: std::cell::Cell::new(false),
+                started: AtomicBool::new(false),
                 channels,
-                frames_written: std::cell::Cell::new(0),
+                frames_written: AtomicU64::new(0),
                 buffers,
             })
         }
     }
 
     fn ensure_started(&self) -> Result<(), String> {
-        if self.started.get() {
+        // compare_exchange so exactly one caller starts the queue even when
+        // driven from more than one thread.
+        if self
+            .started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
             return Ok(());
         }
         unsafe {
             let rc = (self.ca.start)(self.queue, std::ptr::null_mut());
             if rc != 0 {
+                self.started.store(false, Ordering::Release);
                 return Err(format!("AudioQueueStart: {rc}"));
             }
         }
-        self.started.set(true);
         Ok(())
     }
+}
+
+/// Pulls the next interleaved S16 chunk from the channel or the pending
+/// carry-over. Returns None when nothing is queued.
+fn next_chunk(channel: &Channel) -> Option<Vec<i16>> {
+    {
+        let mut pending = lock_unpoisoned(&channel.pending);
+        if !pending.is_empty() {
+            return Some(std::mem::take(&mut *pending));
+        }
+    }
+    let rx = lock_unpoisoned(&channel.rx);
+    rx.try_recv().ok()
 }
 
 /// Called by AudioQueue on its own thread when a buffer is ready to be filled.
@@ -236,25 +266,27 @@ unsafe extern "C" fn output_cb(
     buf: AudioQueueBufferRef,
 ) {
     let channel = &*(user_data as *const Channel);
+    // The playback is being torn down; do not touch or re-enqueue the buffer.
+    if channel.closed.load(Ordering::Acquire) {
+        return;
+    }
     let cap = (*buf).audio_data_bytes_capacity as usize;
     let dst = (*buf).audio_data as *mut u8;
     let mut written = 0usize;
-    loop {
-        if written >= cap {
-            break;
-        }
-        let chunk = {
-            let rx = channel.rx.lock().unwrap();
-            rx.try_recv()
+    while written < cap {
+        let samples = match next_chunk(channel) {
+            Some(s) => s,
+            None => break,
         };
-        match chunk {
-            Ok(samples) => {
-                let bytes = samples.len() * 2;
-                let n = bytes.min(cap - written);
-                std::ptr::copy_nonoverlapping(samples.as_ptr() as *const u8, dst.add(written), n);
-                written += n;
-            }
-            Err(_) => break,
+        let bytes = samples.len() * 2;
+        let n = bytes.min(cap - written);
+        std::ptr::copy_nonoverlapping(samples.as_ptr() as *const u8, dst.add(written), n);
+        written += n;
+        // Stash what did not fit for the next callback instead of dropping it
+        // (cap and written are even, so the split lands on a sample boundary).
+        if n < bytes {
+            *lock_unpoisoned(&channel.pending) = samples[n / 2..].to_vec();
+            break;
         }
     }
     if written < cap {
@@ -262,8 +294,8 @@ unsafe extern "C" fn output_cb(
     }
     (*buf).audio_data_byte_size = cap as u32;
     channel
-        .frames_drained
-        .fetch_add(written as u64 / 2, std::sync::atomic::Ordering::Relaxed);
+        .samples_drained
+        .fetch_add(written as u64 / 2, Ordering::Relaxed);
     // Re-arm: hand the same buffer back so the device gets the next slice.
     (channel.enqueue)(queue, buf, 0, std::ptr::null());
 }
@@ -278,8 +310,10 @@ impl PcmSink for CoreAudioPlayback<'_> {
                 .send(chunk.to_vec())
                 .map_err(|e| format!("audio channel closed: {e}"))?;
         }
-        self.frames_written
-            .set(self.frames_written.get() + samples.len() as u64 / self.channels as u64);
+        self.frames_written.fetch_add(
+            samples.len() as u64 / self.channels as u64,
+            Ordering::Relaxed,
+        );
         Ok(())
     }
 
@@ -287,12 +321,9 @@ impl PcmSink for CoreAudioPlayback<'_> {
         // Wait until the callback has consumed every sample we queued; that
         // means the device has it. Then sleep one full ring's worth of audio
         // so the speaker actually plays it out before we stop the queue.
-        let target_samples = self.frames_written.get() * self.channels as u64;
+        let target_samples = self.frames_written.load(Ordering::Relaxed) * self.channels as u64;
         for _ in 0..4000 {
-            let drained = self
-                .channel
-                .frames_drained
-                .load(std::sync::atomic::Ordering::Relaxed);
+            let drained = self.channel.samples_drained.load(Ordering::Relaxed);
             if drained >= target_samples {
                 break;
             }
@@ -309,12 +340,13 @@ impl PcmSink for CoreAudioPlayback<'_> {
 
 impl Drop for CoreAudioPlayback<'_> {
     fn drop(&mut self) {
+        self.channel.closed.store(true, Ordering::SeqCst);
         unsafe {
-            for buf in self.buffers.drain(..) {
-                (self.ca.free_buffer)(self.queue, buf);
-            }
+            // AudioQueueDispose(immediate) synchronizes with in-flight
+            // callbacks and frees the queue-owned buffers.
             (self.ca.dispose)(self.queue, 1);
         }
+        self.buffers.clear();
         // Keep Channel alive until after the queue is gone so the callback
         // cannot deref a freed pointer mid-stop.
         let _ = &self.channel;

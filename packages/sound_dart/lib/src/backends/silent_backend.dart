@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:typed_data';
 
+import '../pcm_stream.dart';
 import '../playback.dart';
 import '../sound_backend.dart';
 import '../sound_source.dart';
@@ -8,12 +10,25 @@ import '../sound_source.dart';
 ///
 /// It is the lowest-priority fallback so that `sound_dart` never crashes in
 /// environments without an audio device (CI, headless servers). It is also a
-/// convenient test double: every loaded source is recorded in [loaded].
-class SilentBackend extends SoundBackend {
-  SilentBackend({this.simulatedDuration = Duration.zero});
+/// convenient test double: every loaded source is recorded in [loaded]. As a
+/// [PcmTap] it yields silence of [simulatedDuration], so the PCM-tap plumbing
+/// can be exercised with no decoder or hardware.
+class SilentBackend extends SoundBackend implements PcmTap {
+  SilentBackend({
+    this.simulatedDuration = Duration.zero,
+    this.pcmSampleRate = 44100,
+    this.pcmChannels = 1,
+  });
 
-  /// How long a [SilentPlayback] pretends to play before completing.
+  /// How long a [SilentPlayback] pretends to play before completing, and how
+  /// much silence [openPcmStream] yields.
   final Duration simulatedDuration;
+
+  /// Sample rate of the silence produced by [openPcmStream].
+  final int pcmSampleRate;
+
+  /// Channel count of the silence produced by [openPcmStream].
+  final int pcmChannels;
 
   /// Sources passed to [load], in order. Useful in tests.
   final List<SoundSource> loaded = [];
@@ -38,6 +53,26 @@ class SilentBackend extends SoundBackend {
   }) async {
     loaded.add(source);
     return SilentPlayback(simulatedDuration);
+  }
+
+  @override
+  Future<PcmStream> openPcmStream(
+    SoundSource source, {
+    int chunkFrames = 2048,
+    bool loop = false,
+  }) async {
+    loaded.add(source);
+    final frames =
+        simulatedDuration.inMicroseconds *
+        pcmSampleRate ~/
+        Duration.microsecondsPerSecond;
+    return PcmStream(
+      samples: Int16List(frames * pcmChannels), // all-zero silence
+      channels: pcmChannels,
+      sampleRate: pcmSampleRate,
+      chunkFrames: chunkFrames,
+      loop: loop,
+    );
   }
 
   @override

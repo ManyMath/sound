@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 
 import '../../exceptions.dart';
+import '../../pcm_stream.dart';
 import '../../playback.dart';
 import '../../sound_backend.dart';
 import '../../sound_source.dart';
@@ -23,6 +25,26 @@ typedef _PlayBytes =
     int Function(Pointer<Void>, Pointer<Uint8>, int, Pointer<Utf8>, int);
 typedef _PlayFileNative = Uint64 Function(Pointer<Void>, Pointer<Utf8>, Int32);
 typedef _PlayFile = int Function(Pointer<Void>, Pointer<Utf8>, int);
+typedef _PlayUrlNative =
+    Uint64 Function(
+      Pointer<Void>,
+      Pointer<Utf8>,
+      Pointer<Pointer<Utf8>>,
+      Pointer<Pointer<Utf8>>,
+      Size,
+      Pointer<Utf8>,
+      Int32,
+    );
+typedef _PlayUrl =
+    int Function(
+      Pointer<Void>,
+      Pointer<Utf8>,
+      Pointer<Pointer<Utf8>>,
+      Pointer<Pointer<Utf8>>,
+      int,
+      Pointer<Utf8>,
+      int,
+    );
 typedef _VoiceStateNative = Int32 Function(Pointer<Void>, Uint64);
 typedef _VoiceState = int Function(Pointer<Void>, int);
 typedef _VoiceOpNative = Int32 Function(Pointer<Void>, Uint64);
@@ -39,6 +61,22 @@ typedef _VoiceErrorNative = Pointer<Utf8> Function(Pointer<Void>, Uint64);
 typedef _VoiceError = Pointer<Utf8> Function(Pointer<Void>, int);
 typedef _LastErrorNative = Pointer<Utf8> Function();
 typedef _LastError = Pointer<Utf8> Function();
+// Decode-to-PCM (the PCM tap), mirroring native/sound_cli/src/lib.rs.
+typedef _DecodeBytesNative =
+    Pointer<Void> Function(Pointer<Uint8>, Size, Pointer<Utf8>);
+typedef _DecodeBytes =
+    Pointer<Void> Function(Pointer<Uint8>, int, Pointer<Utf8>);
+typedef _DecodeFileNative = Pointer<Void> Function(Pointer<Utf8>);
+typedef _DecodeFile = Pointer<Void> Function(Pointer<Utf8>);
+typedef _DecodedLenNative = Int64 Function(Pointer<Void>);
+typedef _DecodedLen = int Function(Pointer<Void>);
+typedef _DecodedIntNative = Int32 Function(Pointer<Void>);
+typedef _DecodedInt = int Function(Pointer<Void>);
+typedef _DecodedCopyNative =
+    IntPtr Function(Pointer<Void>, Size, Pointer<Int16>, Size);
+typedef _DecodedCopy = int Function(Pointer<Void>, int, Pointer<Int16>, int);
+typedef _DecodedFreeNative = Void Function(Pointer<Void>);
+typedef _DecodedFree = void Function(Pointer<Void>);
 
 // Voice state codes mirrored from the native side.
 const int _statePlaying = 0;
@@ -46,6 +84,7 @@ const int _stateCompleted = 1;
 const int _stateStopped = 2;
 const int _stateError = 3;
 const int _statePaused = 4;
+const int _stateConnecting = 5;
 
 /// Locates and opens the `sound_cli` shared library.
 class NativeLibrary {
@@ -131,6 +170,7 @@ class _Bindings {
       playFile = lib.lookupFunction<_PlayFileNative, _PlayFile>(
         'sound_play_file',
       ),
+      playUrl = lib.lookupFunction<_PlayUrlNative, _PlayUrl>('sound_play_url'),
       voiceState = lib.lookupFunction<_VoiceStateNative, _VoiceState>(
         'sound_voice_state',
       ),
@@ -159,12 +199,34 @@ class _Bindings {
       ),
       lastError = lib.lookupFunction<_LastErrorNative, _LastError>(
         'sound_last_error',
+      ),
+      decodeBytes = lib.lookupFunction<_DecodeBytesNative, _DecodeBytes>(
+        'sound_decode_bytes',
+      ),
+      decodeFile = lib.lookupFunction<_DecodeFileNative, _DecodeFile>(
+        'sound_decode_file',
+      ),
+      decodedLen = lib.lookupFunction<_DecodedLenNative, _DecodedLen>(
+        'sound_decoded_len',
+      ),
+      decodedChannels = lib.lookupFunction<_DecodedIntNative, _DecodedInt>(
+        'sound_decoded_channels',
+      ),
+      decodedRate = lib.lookupFunction<_DecodedIntNative, _DecodedInt>(
+        'sound_decoded_rate',
+      ),
+      decodedCopy = lib.lookupFunction<_DecodedCopyNative, _DecodedCopy>(
+        'sound_decoded_copy',
+      ),
+      decodedFree = lib.lookupFunction<_DecodedFreeNative, _DecodedFree>(
+        'sound_decoded_free',
       );
 
   final Pointer<Void> Function() playerNew;
   final _PlayerFree playerFree;
   final _PlayBytes playBytes;
   final _PlayFile playFile;
+  final _PlayUrl playUrl;
   final _VoiceState voiceState;
   final _VoiceOp stop;
   final _SetVolume setVolume;
@@ -178,10 +240,21 @@ class _Bindings {
   final _VoiceOp voiceFree;
   final _VoiceError voiceError;
   final _LastError lastError;
+  final _DecodeBytes decodeBytes;
+  final _DecodeFile decodeFile;
+  final _DecodedLen decodedLen;
+  final _DecodedInt decodedChannels;
+  final _DecodedInt decodedRate;
+  final _DecodedCopy decodedCopy;
+  final _DecodedFree decodedFree;
 }
 
 /// Plays audio by calling the native `sound_cli` library over FFI.
-class FfiBackend extends SoundBackend {
+///
+/// It also implements [PcmTap]: the native decoder can hand back decoded PCM
+/// without opening an audio device, which is how a clip is routed into a
+/// capture stream instead of the speakers.
+class FfiBackend extends SoundBackend implements PcmTap {
   _Bindings? _bindings;
   Pointer<Void> _player = nullptr;
   bool _available = false;
@@ -238,6 +311,85 @@ class FfiBackend extends SoundBackend {
   }
 
   @override
+  Future<PcmStream> openPcmStream(
+    SoundSource source, {
+    int chunkFrames = 2048,
+    bool loop = false,
+  }) async {
+    if (!isAvailable) {
+      throw const NoBackendAvailableException(
+        'The sound_cli library could not be loaded.',
+      );
+    }
+    return _decode(source, chunkFrames: chunkFrames, loop: loop);
+  }
+
+  /// Decodes [source] to interleaved S16LE via the native decoder (no audio
+  /// device) and copies the samples into a Dart-owned [PcmStream].
+  PcmStream _decode(
+    SoundSource source, {
+    required int chunkFrames,
+    required bool loop,
+  }) {
+    final b = _bindings!;
+    final Pointer<Void> decoded;
+    switch (source) {
+      case BytesSource(:final bytes, :final format):
+        final buf = malloc<Uint8>(bytes.length);
+        final cFormat = format == null ? nullptr : format.toNativeUtf8();
+        try {
+          buf.asTypedList(bytes.length).setAll(0, bytes);
+          decoded = b.decodeBytes(buf, bytes.length, cFormat);
+        } finally {
+          malloc.free(buf);
+          if (cFormat != nullptr) malloc.free(cFormat);
+        }
+      case FileSource(:final path):
+        final cPath = path.toNativeUtf8();
+        try {
+          decoded = b.decodeFile(cPath);
+        } finally {
+          malloc.free(cPath);
+        }
+      case UriSource():
+        // The no-device decode-to-PCM tap (used by `soundboard`'s mic
+        // mixing) has no native `sound_decode_url` counterpart yet -
+        // `sound_play_url` only supports the audio-device playback path.
+        throw const UnsupportedSourceException(
+          'UriSource is not supported by openPcmStream yet; use load()/play() instead',
+        );
+    }
+    if (decoded == nullptr) {
+      throw UnsupportedSourceException('decode failed: ${_lastError()}');
+    }
+    try {
+      final len = b.decodedLen(decoded);
+      final channels = b.decodedChannels(decoded);
+      final rate = b.decodedRate(decoded);
+      if (len <= 0 || channels <= 0 || rate <= 0) {
+        throw const UnsupportedSourceException('decoded zero audio frames');
+      }
+      final out = malloc<Int16>(len);
+      try {
+        final n = b.decodedCopy(decoded, 0, out, len);
+        final count = n < 0 ? 0 : n;
+        final samples = Int16List(count)..setAll(0, out.asTypedList(count));
+        return PcmStream(
+          samples: samples,
+          channels: channels,
+          sampleRate: rate,
+          chunkFrames: chunkFrames,
+          loop: loop,
+        );
+      } finally {
+        malloc.free(out);
+      }
+    } finally {
+      b.decodedFree(decoded);
+    }
+  }
+
+  @override
   Future<void> dispose() async {
     if (_player != nullptr) {
       _bindings!.playerFree(_player);
@@ -288,7 +440,10 @@ class FfiPlayback implements Playback {
     if (_volume != 1.0) _b.setVolume(_player, _voiceId, _volume);
     _rate = _b.sampleRate(_player, _voiceId);
     _durationFrames = _b.durationFrames(_player, _voiceId);
-    _state = PlaybackState.playing;
+    // For a UriSource, the native voice starts in a connecting state (rate/
+    // duration both 0) until its background thread's first chunk decodes;
+    // _checkState's next poll picks up the real state once it does.
+    _state = _rate > 0 ? PlaybackState.playing : PlaybackState.connecting;
     _poll = Timer.periodic(
       const Duration(milliseconds: 50),
       (_) => _checkState(),
@@ -317,13 +472,62 @@ class FfiPlayback implements Playback {
         } finally {
           malloc.free(cPath);
         }
+      case UriSource(:final uri, :final headers, :final format):
+        final cUrl = uri.toString().toNativeUtf8();
+        final cFormat = format == null ? nullptr : format.toNativeUtf8();
+        final entries = headers.entries.toList(growable: false);
+        final names = malloc<Pointer<Utf8>>(entries.length);
+        final values = malloc<Pointer<Utf8>>(entries.length);
+        final allocatedStrings = <Pointer<Utf8>>[];
+        try {
+          for (var i = 0; i < entries.length; i++) {
+            final name = entries[i].key.toNativeUtf8();
+            final value = entries[i].value.toNativeUtf8();
+            allocatedStrings
+              ..add(name)
+              ..add(value);
+            names[i] = name;
+            values[i] = value;
+          }
+          // The native side either fails synchronously (bad URL/unsupported
+          // format) or spawns background fetch/decode threads before
+          // returning, so the request buffers are safe to free immediately
+          // afterward either way.
+          return _b.playUrl(
+            _player,
+            cUrl,
+            names,
+            values,
+            entries.length,
+            cFormat,
+            loopFlag,
+          );
+        } finally {
+          malloc.free(cUrl);
+          if (cFormat != nullptr) malloc.free(cFormat);
+          for (final s in allocatedStrings) {
+            malloc.free(s);
+          }
+          malloc.free(names);
+          malloc.free(values);
+        }
     }
   }
 
   void _checkState() {
     if (_voiceId == 0) return;
+    // For `UriSource`, the rate is 0 (and duration/position meaningless)
+    // until the background thread's first chunk decodes, and frames decoded
+    // so far (hence duration) keep growing after that while the stream
+    // downloads - so both are re-read every poll rather than once in
+    // `play()`. A no-op re-read for the bytes/file sources, whose rate and
+    // total are already known up front.
+    _rate = _b.sampleRate(_player, _voiceId);
+    _durationFrames = _b.durationFrames(_player, _voiceId);
     final native = _b.voiceState(_player, _voiceId);
     switch (native) {
+      case _stateConnecting:
+        _state = PlaybackState.connecting;
       case _statePlaying:
         _state = PlaybackState.playing;
       case _statePaused:
@@ -395,6 +599,9 @@ class FfiPlayback implements Playback {
 
   @override
   Future<void> seek(Duration position) async {
+    // _rate is 0 while a URL voice is still connecting (the stream's rate is
+    // unknown until the first chunk decodes), so a seek during that window is
+    // a no-op rather than a guess at the frame index.
     if (_voiceId != 0 && _rate > 0) {
       final frame = position.inMicroseconds * _rate ~/ 1000000;
       _b.seek(_player, _voiceId, frame < 0 ? 0 : frame);

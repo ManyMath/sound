@@ -3,14 +3,18 @@
 //! FLAC with no system dependencies.
 
 use std::io::Cursor;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::DecoderOptions;
+use symphonia::core::codecs::{Decoder, DecoderOptions};
 use symphonia::core::errors::Error as SymphoniaError;
-use symphonia::core::formats::FormatOptions;
+use symphonia::core::formats::{FormatOptions, FormatReader};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
+
+use crate::streaming_source::StreamingSource;
 
 /// Decoded audio ready for playback.
 pub struct DecodedAudio {
@@ -26,7 +30,7 @@ pub struct DecodedAudio {
 pub fn decode_bytes(bytes: &[u8], format_hint: Option<&str>) -> Result<DecodedAudio, String> {
     let source = Cursor::new(bytes.to_vec());
     let mss = MediaSourceStream::new(Box::new(source), Default::default());
-    decode(mss, format_hint)
+    decode_all(StreamDecoder::open(mss, format_hint)?)
 }
 
 /// Decodes an audio file at [path] (format auto-detected) into interleaved S16LE.
@@ -34,76 +38,147 @@ pub fn decode_file(path: &str) -> Result<DecodedAudio, String> {
     let file = std::fs::File::open(path).map_err(|e| format!("open {path}: {e}"))?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
     let hint = path.rsplit('.').next();
-    decode(mss, hint)
+    decode_all(StreamDecoder::open(mss, hint)?)
 }
 
-fn decode(mss: MediaSourceStream, format_hint: Option<&str>) -> Result<DecodedAudio, String> {
-    let mut hint = Hint::new();
-    if let Some(ext) = format_hint {
-        hint.with_extension(ext);
+/// Fully decodes whatever [StreamDecoder] yields into one buffer. Used by the
+/// bytes/file entry points, which have no reason to play incrementally since
+/// their whole input is already available locally.
+fn decode_all(mut decoder: StreamDecoder) -> Result<DecodedAudio, String> {
+    let mut samples = Vec::new();
+    while let Some(chunk) = decoder.next_chunk()? {
+        samples.extend_from_slice(&chunk);
     }
-
-    let probed = symphonia::default::get_probe()
-        .format(
-            &hint,
-            mss,
-            &FormatOptions {
-                enable_gapless: true,
-                ..Default::default()
-            },
-            &MetadataOptions::default(),
-        )
-        .map_err(|e| format!("unsupported or invalid audio: {e}"))?;
-
-    let mut format = probed.format;
-    let track = format
-        .default_track()
-        .ok_or_else(|| "no audio track found".to_string())?;
-    let track_id = track.id;
-    let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
-        .map_err(|e| format!("no decoder for track: {e}"))?;
-
-    let mut samples: Vec<i16> = Vec::new();
-    let mut channels = 0u32;
-    let mut rate = 0u32;
-    let mut sample_buf: Option<SampleBuffer<i16>> = None;
-
-    loop {
-        let packet = match format.next_packet() {
-            Ok(p) => p,
-            // The standard formats signal end-of-stream as an IO error; treat
-            // that as a clean finish.
-            Err(SymphoniaError::IoError(_)) => break,
-            Err(e) => return Err(format!("read error: {e}")),
-        };
-        if packet.track_id() != track_id {
-            continue;
-        }
-        match decoder.decode(&packet) {
-            Ok(decoded) => {
-                let spec = *decoded.spec();
-                channels = spec.channels.count() as u32;
-                rate = spec.rate;
-                let buf = sample_buf
-                    .get_or_insert_with(|| SampleBuffer::new(decoded.capacity() as u64, spec));
-                buf.copy_interleaved_ref(decoded);
-                samples.extend_from_slice(buf.samples());
-            }
-            Err(SymphoniaError::DecodeError(_)) => continue,
-            Err(SymphoniaError::IoError(_)) => break,
-            Err(e) => return Err(format!("decode error: {e}")),
-        }
-    }
-
-    if channels == 0 || rate == 0 {
+    if decoder.channels == 0 || decoder.rate == 0 {
         return Err("decoded zero audio frames".to_string());
     }
     Ok(DecodedAudio {
         samples,
-        channels,
-        rate,
+        channels: decoder.channels,
+        rate: decoder.rate,
     })
+}
+
+/// Opens a streaming decode of `url` (with `headers`), for a caller that
+/// consumes [StreamDecoder::next_chunk] incrementally so playback can begin
+/// before the whole response has arrived. [format_hint] is an optional file
+/// extension that helps the probe when the URL's path has no recognizable
+/// one. Setting `stop` aborts the download and unblocks a blocked
+/// [StreamDecoder::next_chunk].
+pub fn open_url_decoder(
+    url: String,
+    headers: Vec<(String, String)>,
+    format_hint: Option<&str>,
+    stop: Arc<AtomicBool>,
+) -> Result<StreamDecoder, String> {
+    let source = StreamingSource::fetch(url, headers, stop);
+    let mss = MediaSourceStream::new(Box::new(source), Default::default());
+    StreamDecoder::open(mss, format_hint)
+}
+
+/// Decodes one packet at a time from a [MediaSourceStream], so a caller can
+/// start consuming audio before the whole source has been read (relevant
+/// when the source is still downloading, as with [StreamingSource]).
+///
+/// `channels`/`rate` are `0` until the first packet decodes, since some
+/// formats don't expose them before that; callers reading incrementally
+/// should treat the first successful [next_chunk] as also finalizing them.
+pub struct StreamDecoder {
+    format: Box<dyn FormatReader>,
+    decoder: Box<dyn Decoder>,
+    track_id: u32,
+    sample_buf: Option<SampleBuffer<i16>>,
+    pub channels: u32,
+    pub rate: u32,
+}
+
+impl StreamDecoder {
+    fn open(mss: MediaSourceStream, format_hint: Option<&str>) -> Result<StreamDecoder, String> {
+        let mut hint = Hint::new();
+        if let Some(ext) = format_hint {
+            hint.with_extension(ext);
+        }
+
+        let probed = symphonia::default::get_probe()
+            .format(
+                &hint,
+                mss,
+                &FormatOptions {
+                    enable_gapless: true,
+                    ..Default::default()
+                },
+                &MetadataOptions::default(),
+            )
+            .map_err(|e| format!("unsupported or invalid audio: {e}"))?;
+
+        let format = probed.format;
+        let track_id = format
+            .default_track()
+            .ok_or_else(|| "no audio track found".to_string())?
+            .id;
+        let decoder = {
+            let track = format.default_track().unwrap();
+            symphonia::default::get_codecs()
+                .make(&track.codec_params, &DecoderOptions::default())
+                .map_err(|e| format!("no decoder for track: {e}"))?
+        };
+
+        Ok(StreamDecoder {
+            format,
+            decoder,
+            track_id,
+            sample_buf: None,
+            channels: 0,
+            rate: 0,
+        })
+    }
+
+    /// Decodes and returns the next chunk of interleaved S16LE samples, or
+    /// `None` at a clean end of stream. Skips packets for other tracks and
+    /// tolerates individual packet decode errors (matching the previous
+    /// buffered decoder's behavior), only failing on a genuine I/O or format
+    /// error.
+    pub fn next_chunk(&mut self) -> Result<Option<Vec<i16>>, String> {
+        loop {
+            let packet = match self.format.next_packet() {
+                Ok(p) => p,
+                // symphonia signals a clean end-of-stream as an UnexpectedEof
+                // IO error. Any OTHER IO error (a dropped connection, a read
+                // timeout, a truncated download) is a real failure and must
+                // not masquerade as successful completion.
+                Err(SymphoniaError::IoError(e))
+                    if e.kind() == std::io::ErrorKind::UnexpectedEof =>
+                {
+                    return Ok(None)
+                }
+                Err(SymphoniaError::IoError(e)) => return Err(format!("read error: {e}")),
+                Err(e) => return Err(format!("read error: {e}")),
+            };
+            if packet.track_id() != self.track_id {
+                continue;
+            }
+            match self.decoder.decode(&packet) {
+                Ok(decoded) => {
+                    let spec = *decoded.spec();
+                    self.channels = spec.channels.count() as u32;
+                    self.rate = spec.rate;
+                    let buf = self
+                        .sample_buf
+                        .get_or_insert_with(|| SampleBuffer::new(decoded.capacity() as u64, spec));
+                    buf.copy_interleaved_ref(decoded);
+                    return Ok(Some(buf.samples().to_vec()));
+                }
+                Err(SymphoniaError::DecodeError(_)) => continue,
+                Err(SymphoniaError::IoError(e))
+                    if e.kind() == std::io::ErrorKind::UnexpectedEof =>
+                {
+                    return Ok(None)
+                }
+                Err(SymphoniaError::IoError(e)) => return Err(format!("decode error: {e}")),
+                Err(e) => return Err(format!("decode error: {e}")),
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -234,5 +309,108 @@ mod tests {
         for (got, want) in audio.samples.iter().zip(&input) {
             assert_eq!(*got as i32, *want);
         }
+    }
+
+    /// Serves `body` slowly (in small delayed writes) over plain HTTP,
+    /// returning the URL. Exercises the full `net` -> `StreamingSource` ->
+    /// `StreamDecoder` chain end-to-end against a real (if synthetic)
+    /// encoded track, the same way [sound_play_url] does.
+    fn serve_slowly(body: Vec<u8>) -> String {
+        use std::io::Write;
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut discard = [0u8; 4096];
+            let _ = std::io::Read::read(&mut stream, &mut discard);
+            stream
+                .write_all(
+                    format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).as_bytes(),
+                )
+                .unwrap();
+            for chunk in body.chunks(512) {
+                stream.write_all(chunk).unwrap();
+                stream.flush().unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        });
+        format!("http://{addr}/track.wav")
+    }
+
+    #[test]
+    fn decodes_wav_streamed_over_http_incrementally() {
+        let wav = const_wav(2, 44_100, 16, SampleFormat::Int, 4_000, 777);
+        let url = serve_slowly(wav);
+
+        let mut decoder = open_url_decoder(
+            url,
+            Vec::new(),
+            Some("wav"),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        let mut samples = Vec::new();
+        let mut chunk_count = 0;
+        while let Some(chunk) = decoder.next_chunk().unwrap() {
+            chunk_count += 1;
+            samples.extend_from_slice(&chunk);
+        }
+        assert_eq!(decoder.channels, 2);
+        assert_eq!(decoder.rate, 44_100);
+        assert_eq!(samples.len(), 8_000); // 4,000 frames * 2 channels
+        assert!(samples.iter().all(|&s| s == 777));
+        // More than one chunk proves packets were consumed as they decoded,
+        // not all at once after the whole body arrived.
+        assert!(
+            chunk_count > 1,
+            "expected multiple decoded chunks, got {chunk_count}"
+        );
+    }
+
+    #[test]
+    fn open_url_decoder_reports_headers_sent() {
+        use std::io::Write;
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            loop {
+                let mut line = String::new();
+                let n = std::io::BufRead::read_line(&mut reader, &mut line).unwrap();
+                if n == 0 || line == "\r\n" {
+                    break;
+                }
+                request.push_str(&line);
+            }
+            let wav = if request.contains("Authorization: Bearer secret") {
+                const_wav(1, 22_050, 16, SampleFormat::Int, 8, 5)
+            } else {
+                Vec::new()
+            };
+            stream
+                .write_all(
+                    format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", wav.len()).as_bytes(),
+                )
+                .unwrap();
+            stream.write_all(&wav).unwrap();
+        });
+        let url = format!("http://{addr}/track.wav");
+        let mut decoder = open_url_decoder(
+            url,
+            vec![("Authorization".to_string(), "Bearer secret".to_string())],
+            Some("wav"),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        let mut samples = Vec::new();
+        while let Some(chunk) = decoder.next_chunk().unwrap() {
+            samples.extend_from_slice(&chunk);
+        }
+        assert_eq!(decoder.rate, 22_050);
+        assert_eq!(samples.len(), 8);
     }
 }

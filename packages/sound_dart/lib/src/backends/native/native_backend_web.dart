@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:js_interop';
 import 'dart:typed_data';
 
+import 'package:http/http.dart' as http;
 import 'package:web/web.dart' as web;
 
 import '../../exceptions.dart';
@@ -16,7 +17,11 @@ SoundBackend? createNativeBackend() => WebAudioBackend();
 ///
 /// The browser decodes the container itself (WAV/MP3/OGG/…), so [BytesSource]
 /// works for any format the browser supports. [FileSource] is not available on
-/// the web - load file contents and pass them as bytes instead.
+/// the web - load file contents and pass them as bytes instead. [UriSource]
+/// fetches the whole response (with headers, e.g. an auth token) before
+/// decoding - `decodeAudioData` has no incremental/streaming API, so unlike
+/// the native FFI backend's `sound_play_url`, this does not start playback
+/// before the download completes.
 class WebAudioBackend extends SoundBackend {
   web.AudioContext? _context;
 
@@ -46,6 +51,7 @@ class WebAudioBackend extends SoundBackend {
       FileSource() => throw const UnsupportedSourceException(
         'FileSource is not supported on the web; pass bytes instead.',
       ),
+      UriSource(:final uri, :final headers) => await _fetch(uri, headers),
     };
     // decodeAudioData detaches its input, so hand it a private copy.
     final copy = Uint8List.fromList(bytes);
@@ -57,6 +63,18 @@ class WebAudioBackend extends SoundBackend {
   Future<void> dispose() async {
     await _context?.close().toDart;
     _context = null;
+  }
+
+  /// Fetches `uri` with `headers` (e.g. an auth token), throwing on a
+  /// non-2xx response.
+  Future<Uint8List> _fetch(Uri uri, Map<String, String> headers) async {
+    final response = await http.get(uri, headers: headers);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw PlaybackException(
+        'fetching $uri failed: HTTP ${response.statusCode}',
+      );
+    }
+    return response.bodyBytes;
   }
 }
 

@@ -1,6 +1,7 @@
 @TestOn('vm')
 library;
 
+import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
@@ -214,6 +215,62 @@ void main() {
         await pb.dispose();
       });
 
+      test('playUrl sends custom headers with the request', () async {
+        Sound.registerBackend(FfiBackend(), makeActive: true);
+        final wav = buildSineWav(milliseconds: 120);
+        String? receivedAuth;
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        server.listen((req) {
+          receivedAuth = req.headers.value('authorization');
+          req.response
+            ..headers.contentType = ContentType('audio', 'wav')
+            ..add(wav);
+          req.response.close();
+        });
+        addTearDown(() => server.close(force: true));
+
+        final url = 'http://${server.address.host}:${server.port}/tone.wav';
+        final pb = await Sound.playUrl(
+          url,
+          headers: {'Authorization': 'Bearer test-token-123'},
+        );
+        await pb.onComplete.timeout(const Duration(seconds: 5));
+        expect(receivedAuth, 'Bearer test-token-123');
+        await pb.dispose();
+      });
+
+      test(
+        'a UriSource voice reports connecting before the format is known',
+        () async {
+          Sound.registerBackend(FfiBackend(), makeActive: true);
+          final wav = buildSineWav(milliseconds: 120);
+          final gate = Completer<void>();
+          final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+          server.listen((req) async {
+            // Holds the response open so `play()` observably returns before
+            // the stream's format is known, proving it never blocked on this
+            // request.
+            await gate.future;
+            req.response
+              ..headers.contentType = ContentType('audio', 'wav')
+              ..add(wav);
+            await req.response.close();
+          });
+          addTearDown(() => server.close(force: true));
+
+          final url = 'http://${server.address.host}:${server.port}/tone.wav';
+          final pb = await Sound.load(SoundSource.uri(Uri.parse(url)));
+          await pb.play();
+          expect(pb.state, PlaybackState.connecting);
+          expect(pb.duration, isNull);
+
+          gate.complete();
+          await pb.onComplete.timeout(const Duration(seconds: 5));
+          expect(pb.state, PlaybackState.completed);
+          await pb.dispose();
+        },
+      );
+
       test('playUrl surfaces a clear error on HTTP failure', () async {
         Sound.registerBackend(FfiBackend(), makeActive: true);
         final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -223,7 +280,13 @@ void main() {
         });
         addTearDown(() => server.close(force: true));
         final url = 'http://${server.address.host}:${server.port}/missing.wav';
-        await expectLater(Sound.playUrl(url), throwsA(isA<SoundException>()));
+        // Connecting, probing, and decoding the first chunk all happen on a
+        // background thread so playUrl() itself never blocks on network I/O
+        // (and so never fails synchronously) - a connect/HTTP-status failure
+        // surfaces through onComplete instead, the same as a failure partway
+        // through an already-playing stream.
+        final pb = await Sound.playUrl(url);
+        await expectLater(pb.onComplete, throwsA(isA<PlaybackException>()));
       });
 
       test('replaying the same handle restarts and completes', () async {

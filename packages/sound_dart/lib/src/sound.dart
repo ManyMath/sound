@@ -1,12 +1,9 @@
 import 'dart:typed_data';
 
-import 'package:http/http.dart' as http;
-
 import 'backends/native/native_backend.dart';
 import 'backends/silent_backend.dart';
 import 'exceptions.dart';
-import 'pcm.dart';
-import 'pcm_tap.dart' as pcm_tap;
+import 'pcm_stream.dart';
 import 'playback.dart';
 import 'sound_backend.dart';
 import 'sound_source.dart';
@@ -143,44 +140,51 @@ class Sound {
     loop: loop,
   );
 
-  /// Fetches [url] over HTTP and loads it (without starting). Works on every
-  /// platform, including the web (where [FileSource] does not).
+  /// Loads [url] as a [SoundSource.uri] (without starting), sending [headers]
+  /// with the request (e.g. an `Authorization` bearer token). Works on every
+  /// platform, including the web (where [FileSource] does not). On a native
+  /// backend that supports it, playback can start before [url] finishes
+  /// downloading; see [SoundSource.uri].
+  ///
+  /// [headers] are only sent to [url]'s own origin; a redirect to another
+  /// host, port, or scheme drops them so credentials cannot leak. Note the
+  /// native backend keeps both the download and the decoded PCM in memory for
+  /// the playback's lifetime (which makes seek/loop instant), so this suits
+  /// tracks, not open-ended live streams.
   static Future<Playback> loadUrl(
     String url, {
+    Map<String, String> headers = const {},
     double volume = 1.0,
     bool loop = false,
   }) async {
-    final bytes = await _fetch(url);
-    return load(
-      SoundSource.bytes(bytes, format: _extensionOf(url)),
-      volume: volume,
-      loop: loop,
-    );
-  }
-
-  /// Fetches [url] over HTTP and starts playing it.
-  static Future<Playback> playUrl(
-    String url, {
-    double volume = 1.0,
-    bool loop = false,
-  }) async {
-    final playback = await loadUrl(url, volume: volume, loop: loop);
-    await playback.play();
-    return playback;
-  }
-
-  static Future<Uint8List> _fetch(String url) async {
     final Uri uri;
     try {
       uri = Uri.parse(url);
     } on FormatException catch (e) {
       throw SoundException('invalid URL "$url": ${e.message}');
     }
-    final response = await http.get(uri);
-    if (response.statusCode != 200) {
-      throw SoundException('failed to fetch $url: HTTP ${response.statusCode}');
-    }
-    return response.bodyBytes;
+    return load(
+      SoundSource.uri(uri, headers: headers, format: _extensionOf(url)),
+      volume: volume,
+      loop: loop,
+    );
+  }
+
+  /// Loads [url] (with [headers]) and starts playing it.
+  static Future<Playback> playUrl(
+    String url, {
+    Map<String, String> headers = const {},
+    double volume = 1.0,
+    bool loop = false,
+  }) async {
+    final playback = await loadUrl(
+      url,
+      headers: headers,
+      volume: volume,
+      loop: loop,
+    );
+    await playback.play();
+    return playback;
   }
 
   /// The lowercase file extension of a URL/path, or `null` if there is none.
@@ -192,18 +196,39 @@ class Sound {
     return path.substring(dot + 1).toLowerCase();
   }
 
-  /// Opens [source] as a [PcmStream] of decoded frames without playing it.
+  /// Opens a [PcmStream] of [source]'s decoded interleaved S16LE frames without
+  /// playing it through an audio device.
   ///
-  /// This is the playback-path "tap": the clip is pulled as data (to mix,
-  /// analyze, or re-route) rather than sent to an audio device, so it works
-  /// under any backend, including [SilentBackend]. 16-bit PCM WAV is decoded in
-  /// pure Dart; compressed formats are a roadmap item. [chunkFrames] sets how
-  /// many frames each emitted Int16List carries. Throws
-  /// [UnsupportedSourceException] for a source the tap cannot decode.
+  /// This routes a clip's samples somewhere other than the speakers -- for
+  /// example into a microphone capture stream. It uses the active backend when
+  /// it is a [PcmTap] (the FFI backend on native), otherwise the
+  /// highest-priority registered backend that supports tapping (the silent
+  /// fallback always does). [chunkFrames] sizes each emitted chunk; [loop]
+  /// repeats the buffer.
   static Future<PcmStream> openPcmStream(
     SoundSource source, {
     int chunkFrames = 2048,
-  }) => pcm_tap.openPcmStream(source, chunkFrames: chunkFrames);
+    bool loop = false,
+  }) {
+    final tap = _selectTap();
+    return tap.openPcmStream(source, chunkFrames: chunkFrames, loop: loop);
+  }
+
+  /// Picks a backend that can tap PCM: the active one if it can, else the
+  /// highest-priority available [PcmTap].
+  static PcmTap _selectTap() {
+    _ensureDefaults();
+    final active = backend;
+    if (active is PcmTap) return active as PcmTap;
+    final taps = _backends.where((b) => b.isAvailable && b is PcmTap).toList()
+      ..sort((a, b) => b.priority.compareTo(a.priority));
+    if (taps.isEmpty) {
+      throw const UnsupportedSourceException(
+        'No registered backend supports a PCM tap.',
+      );
+    }
+    return taps.first as PcmTap;
+  }
 
   /// Disposes the active backend and clears selection/registry.
   ///
