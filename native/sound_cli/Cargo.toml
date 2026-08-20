@@ -43,7 +43,6 @@ flacenc = "0.4"
 
 # Load the system audio library at runtime (libasound.so.2 on Linux,
 # libaaudio.so on Android, AudioToolbox.framework on macOS/iOS) so we never
-# need its dev headers/pkg-config at build time (honoring the
-# no-system-dependencies constraint).
+# need its dev headers/pkg-config at build time.
 [target.'cfg(any(target_os = "linux", target_os = "android", target_os = "macos", target_os = "ios", target_os = "windows"))'.dependencies]
 libloading = "0.8"
