@@ -4,6 +4,7 @@
 //! use and load them at runtime. winmm.dll ships with every Windows install.
 
 use std::cell::UnsafeCell;
+use std::sync::Arc;
 
 use libloading::Library;
 
@@ -15,6 +16,7 @@ const CALLBACK_NULL: u32 = 0;
 const WHDR_DONE: u32 = 0x0000_0001;
 const WHDR_PREPARED: u32 = 0x0000_0002;
 const MMSYSERR_NOERROR: u32 = 0;
+const MAXPNAMELEN: usize = 32;
 
 type HWaveOut = *mut std::ffi::c_void;
 
@@ -42,6 +44,18 @@ struct WaveHdr {
     reserved: usize,
 }
 
+#[repr(C)]
+struct WaveOutCapsW {
+    mid: u16,
+    pid: u16,
+    driver_version: u32,
+    pname: [u16; MAXPNAMELEN],
+    formats: u32,
+    channels: u16,
+    reserved1: u16,
+    support: u32,
+}
+
 type FnWaveOutOpen =
     unsafe extern "system" fn(*mut HWaveOut, u32, *const WaveFormatEx, usize, usize, u32) -> u32;
 type FnWaveOutClose = unsafe extern "system" fn(HWaveOut) -> u32;
@@ -49,6 +63,8 @@ type FnWaveOutReset = unsafe extern "system" fn(HWaveOut) -> u32;
 type FnWaveOutPrepareHeader = unsafe extern "system" fn(HWaveOut, *mut WaveHdr, u32) -> u32;
 type FnWaveOutUnprepareHeader = unsafe extern "system" fn(HWaveOut, *mut WaveHdr, u32) -> u32;
 type FnWaveOutWrite = unsafe extern "system" fn(HWaveOut, *mut WaveHdr, u32) -> u32;
+type FnWaveOutGetNumDevs = unsafe extern "system" fn() -> u32;
+type FnWaveOutGetDevCaps = unsafe extern "system" fn(usize, *mut WaveOutCapsW, u32) -> u32;
 
 pub struct WinMM {
     _lib: Library,
@@ -58,6 +74,8 @@ pub struct WinMM {
     wave_out_prepare_header: FnWaveOutPrepareHeader,
     wave_out_unprepare_header: FnWaveOutUnprepareHeader,
     wave_out_write: FnWaveOutWrite,
+    wave_out_get_num_devs: FnWaveOutGetNumDevs,
+    wave_out_get_dev_caps: FnWaveOutGetDevCaps,
 }
 
 unsafe impl Send for WinMM {}
@@ -82,9 +100,60 @@ impl WinMM {
                 wave_out_prepare_header: sym!(b"waveOutPrepareHeader\0"),
                 wave_out_unprepare_header: sym!(b"waveOutUnprepareHeader\0"),
                 wave_out_write: sym!(b"waveOutWrite\0"),
+                wave_out_get_num_devs: sym!(b"waveOutGetNumDevs\0"),
+                wave_out_get_dev_caps: sym!(b"waveOutGetDevCapsW\0"),
                 _lib: lib,
             })
         }
+    }
+
+    /// Finds an output by its WinMM display name. Drivers may truncate names
+    /// to 31 UTF-16 units, so either side being a case-insensitive prefix is
+    /// accepted in addition to an exact match.
+    fn find_output_device(&self, wanted: &str) -> Result<u32, String> {
+        let wanted = wanted.trim().to_lowercase();
+        if wanted.is_empty() {
+            return Err("output device name is empty".to_string());
+        }
+        let count = unsafe { (self.wave_out_get_num_devs)() };
+        let mut available = Vec::new();
+        for id in 0..count {
+            let mut caps = WaveOutCapsW {
+                mid: 0,
+                pid: 0,
+                driver_version: 0,
+                pname: [0; MAXPNAMELEN],
+                formats: 0,
+                channels: 0,
+                reserved1: 0,
+                support: 0,
+            };
+            let rc = unsafe {
+                (self.wave_out_get_dev_caps)(
+                    id as usize,
+                    &mut caps,
+                    std::mem::size_of::<WaveOutCapsW>() as u32,
+                )
+            };
+            if rc != MMSYSERR_NOERROR {
+                continue;
+            }
+            let end = caps
+                .pname
+                .iter()
+                .position(|&unit| unit == 0)
+                .unwrap_or(MAXPNAMELEN);
+            let name = String::from_utf16_lossy(&caps.pname[..end]);
+            let folded = name.to_lowercase();
+            if folded == wanted || folded.starts_with(&wanted) || wanted.starts_with(&folded) {
+                return Ok(id);
+            }
+            available.push(name);
+        }
+        Err(format!(
+            "output device {wanted:?} not found (available: {})",
+            available.join(", ")
+        ))
     }
 }
 
@@ -97,15 +166,24 @@ struct BufferRing {
     next: usize,
 }
 
-pub struct WinMMPlayback<'a> {
-    wmm: &'a WinMM,
+pub struct WinMMPlayback {
+    wmm: Arc<WinMM>,
     handle: HWaveOut,
     ring: UnsafeCell<BufferRing>,
     channels: u32,
 }
 
-impl<'a> WinMMPlayback<'a> {
-    pub fn open(wmm: &'a WinMM, channels: u32, rate: u32) -> Result<Self, String> {
+impl WinMMPlayback {
+    pub fn open(wmm: Arc<WinMM>, channels: u32, rate: u32) -> Result<Self, String> {
+        Self::open_device(wmm, WAVE_MAPPER, channels, rate)
+    }
+
+    fn open_device(
+        wmm: Arc<WinMM>,
+        device: u32,
+        channels: u32,
+        rate: u32,
+    ) -> Result<Self, String> {
         let channels = channels.max(1);
         let block_align = channels as u16 * 2;
         let wfx = WaveFormatEx {
@@ -119,7 +197,7 @@ impl<'a> WinMMPlayback<'a> {
         };
         let mut handle: HWaveOut = std::ptr::null_mut();
         unsafe {
-            let rc = (wmm.wave_out_open)(&mut handle, WAVE_MAPPER, &wfx, 0, 0, CALLBACK_NULL);
+            let rc = (wmm.wave_out_open)(&mut handle, device, &wfx, 0, 0, CALLBACK_NULL);
             if rc != MMSYSERR_NOERROR {
                 return Err(format!("waveOutOpen failed: error {rc}"));
             }
@@ -155,18 +233,22 @@ impl<'a> WinMMPlayback<'a> {
         })
     }
 
-    fn wait_for_hdr(hdr: &WaveHdr) {
+    fn wait_for_hdr(hdr: &WaveHdr) -> Result<(), String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
         loop {
             let flags = hdr.flags;
             if flags & WHDR_PREPARED == 0 || flags & WHDR_DONE != 0 {
-                break;
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("waveOut buffer stalled for more than one second".to_string());
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
 }
 
-impl PcmSink for WinMMPlayback<'_> {
+impl PcmSink for WinMMPlayback {
     fn write(&self, samples: &[i16]) -> Result<(), String> {
         let bytes: &[u8] =
             unsafe { std::slice::from_raw_parts(samples.as_ptr() as *const u8, samples.len() * 2) };
@@ -175,7 +257,7 @@ impl PcmSink for WinMMPlayback<'_> {
         let ring = unsafe { &mut *self.ring.get() };
         for chunk in bytes.chunks(buf_bytes) {
             let idx = ring.next % NUM_BUFFERS;
-            Self::wait_for_hdr(&ring.hdrs[idx]);
+            Self::wait_for_hdr(&ring.hdrs[idx])?;
 
             if ring.hdrs[idx].flags & WHDR_PREPARED != 0 {
                 unsafe {
@@ -219,12 +301,12 @@ impl PcmSink for WinMMPlayback<'_> {
     fn drain(&self) {
         let ring = unsafe { &*self.ring.get() };
         for hdr in &ring.hdrs {
-            Self::wait_for_hdr(hdr);
+            let _ = Self::wait_for_hdr(hdr);
         }
     }
 }
 
-impl Drop for WinMMPlayback<'_> {
+impl Drop for WinMMPlayback {
     fn drop(&mut self) {
         let ring = self.ring.get_mut();
         unsafe {
@@ -240,6 +322,31 @@ impl Drop for WinMMPlayback<'_> {
             }
             (self.wmm.wave_out_close)(self.handle);
         }
+    }
+}
+
+/// Caller-pushed output to a specifically named Windows playback device.
+/// A virtual cable such as VB-CABLE exposes this endpoint as "CABLE Input"
+/// and presents its paired "CABLE Output" endpoint to recording applications.
+pub struct NamedSink {
+    playback: WinMMPlayback,
+    channels: u32,
+}
+
+impl NamedSink {
+    pub fn open(device: &str, rate: u32, channels: u32) -> Result<Self, String> {
+        let wmm = Arc::new(WinMM::load()?);
+        let id = wmm.find_output_device(device)?;
+        let playback = WinMMPlayback::open_device(wmm, id, channels, rate)?;
+        Ok(Self {
+            playback,
+            channels: channels.max(1),
+        })
+    }
+
+    pub fn write(&self, samples: &[i16]) -> Result<usize, String> {
+        self.playback.write(samples)?;
+        Ok(samples.len() / self.channels as usize)
     }
 }
 

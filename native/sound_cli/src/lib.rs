@@ -36,6 +36,11 @@ mod sink;
 #[cfg(target_os = "windows")]
 mod winmm;
 
+#[cfg(target_os = "macos")]
+use sink::Sink as NamedOutputSink;
+#[cfg(target_os = "windows")]
+use winmm::NamedSink as NamedOutputSink;
+
 /// A platform audio output that accepts interleaved S16LE frames.
 pub(crate) trait PcmSink {
     /// Writes one interleaved chunk, blocking until accepted.
@@ -375,7 +380,7 @@ impl Player {
     ) -> JoinHandle<()> {
         let wmm = self.winmm.clone();
         std::thread::spawn(move || {
-            let sink = winmm::WinMMPlayback::open(&wmm, channels, rate);
+            let sink = winmm::WinMMPlayback::open(wmm, channels, rate);
             run_voice(sink, channels, samples, &shared);
         })
     }
@@ -492,7 +497,7 @@ impl Player {
                 rate,
                 total_frames,
                 &shared,
-                |c, r| winmm::WinMMPlayback::open(&wmm, c, r),
+                |c, r| winmm::WinMMPlayback::open(wmm, c, r),
             );
         })
     }
@@ -1323,24 +1328,22 @@ pub extern "C" fn sound_decoded_free(d: *mut Decoded) {
 }
 
 // ---------------------------------------------------------------------------
-// CoreAudio output sink (macOS virtual-microphone feeder)
+// Named output sink (virtual-microphone feeder on macOS and Windows)
 // ---------------------------------------------------------------------------
 //
-// Opens a CoreAudio output on a NAMED device (looked up by name or UID through
-// the HAL) and accepts caller-pushed interleaved S16LE frames, converting them
-// to the device's Float32 format. The Dart `CoreAudioVirtualMic` writes the
-// soundboard mix here and a loopback device (BlackHole, or an own-brand driver)
-// presents it as a microphone other apps can select.
+// Opens a NAMED output device and accepts caller-pushed interleaved S16LE
+// frames. A loopback device (BlackHole on macOS or VB-CABLE on Windows)
+// presents that stream as a microphone other apps can select.
 //
 // This has its own error slot (`sound_sink_last_error`) so a sink failure does
 // not race the playback path's `sound_last_error`.
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 thread_local! {
     static SINK_LAST_ERROR: RefCell<CString> = RefCell::new(CString::default());
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn set_sink_error(msg: impl Into<String>) {
     let c = CString::new(msg.into()).unwrap_or_default();
     SINK_LAST_ERROR.with(|e| *e.borrow_mut() = c);
@@ -1352,13 +1355,13 @@ fn set_sink_error(msg: impl Into<String>) {
 ///
 /// # Safety
 /// `device` must be a valid NUL-terminated C string.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[no_mangle]
 pub unsafe extern "C" fn sound_sink_open(
     device: *const c_char,
     rate: u32,
     channels: u32,
-) -> *mut sink::Sink {
+) -> *mut NamedOutputSink {
     if device.is_null() {
         set_sink_error("null device name");
         return std::ptr::null_mut();
@@ -1370,7 +1373,7 @@ pub unsafe extern "C" fn sound_sink_open(
             return std::ptr::null_mut();
         }
     };
-    match sink::Sink::open(name, rate, channels) {
+    match NamedOutputSink::open(name, rate, channels) {
         Ok(s) => Box::into_raw(Box::new(s)),
         Err(e) => {
             set_sink_error(e);
@@ -1385,10 +1388,10 @@ pub unsafe extern "C" fn sound_sink_open(
 /// # Safety
 /// `sink` must be a sink from [sound_sink_open]; `samples` must point to `len`
 /// readable `i16` values.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[no_mangle]
 pub unsafe extern "C" fn sound_sink_write(
-    sink: *mut sink::Sink,
+    sink: *mut NamedOutputSink,
     samples: *const i16,
     len: usize,
 ) -> i32 {
@@ -1408,9 +1411,9 @@ pub unsafe extern "C" fn sound_sink_write(
 }
 
 /// Closes and frees a sink from [sound_sink_open].
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[no_mangle]
-pub extern "C" fn sound_sink_close(sink: *mut sink::Sink) {
+pub extern "C" fn sound_sink_close(sink: *mut NamedOutputSink) {
     if !sink.is_null() {
         drop(unsafe { Box::from_raw(sink) });
     }
@@ -1418,7 +1421,7 @@ pub extern "C" fn sound_sink_close(sink: *mut sink::Sink) {
 
 /// Returns the last sink error on this thread as a NUL-terminated C string. The
 /// pointer is valid until the next sink call on the same thread.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[no_mangle]
 pub extern "C" fn sound_sink_last_error() -> *const c_char {
     SINK_LAST_ERROR.with(|e| e.borrow().as_ptr())
