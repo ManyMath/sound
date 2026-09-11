@@ -120,7 +120,7 @@ class NativeLibrary {
     if (Platform.isMacOS || Platform.isIOS) {
       try {
         final p = DynamicLibrary.process();
-        // Probe one expected symbol so we know FFI can actually find it.
+        // Probe one expected symbol so we know FFI can find it.
         p.lookup<NativeFunction<_PlayerNewNative>>('sound_player_new');
         _opened = p;
       } on Object {

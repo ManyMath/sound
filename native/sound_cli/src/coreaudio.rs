@@ -320,7 +320,7 @@ impl PcmSink for CoreAudioPlayback<'_> {
     fn drain(&self) {
         // Wait until the callback has consumed every sample we queued; that
         // means the device has it. Then sleep one full ring's worth of audio
-        // so the speaker actually plays it out before we stop the queue.
+        // so the speaker plays it out before we stop the queue.
         let target_samples = self.frames_written.load(Ordering::Relaxed) * self.channels as u64;
         for _ in 0..4000 {
             let drained = self.channel.samples_drained.load(Ordering::Relaxed);

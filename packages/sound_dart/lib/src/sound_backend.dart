@@ -3,7 +3,7 @@ import 'sound_source.dart';
 
 /// A pluggable provider of sound capabilities for a given platform/technique.
 ///
-/// `sound_dart` is deliberately backend-agnostic: Linux/macOS/Windows/CLI reach
+/// `sound_dart` is backend-agnostic: Linux/macOS/Windows/CLI reach
 /// native audio over FFI, Web uses WebAudio, and Flutter platforms may layer
 /// channel-based backends. Several backends can be registered at once; the
 /// active one is chosen by [isAvailable] and [priority] (see `Sound`).
@@ -11,7 +11,7 @@ abstract class SoundBackend {
   /// A short, stable identifier (e.g. `ffi`, `webaudio`, `silent`).
   String get name;
 
-  /// Whether this backend can actually run in the current environment.
+  /// Whether this backend can run in the current environment.
   ///
   /// Should be cheap and side-effect free; it is consulted during backend
   /// selection. For example the FFI backend reports `false` when the native

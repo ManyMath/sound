@@ -1,6 +1,6 @@
 //! Minimal ALSA binding obtained by `dlopen`-ing the runtime `libasound.so.2`.
 //!
-//! We deliberately avoid linking against ALSA at build time (which would need
+//! We avoid linking against ALSA at build time (which would need
 //! the `libasound2-dev` package / pkg-config). Instead we declare the handful
 //! of symbols we use ourselves and resolve them from the shared library that
 //! ships with a default Ubuntu install. On this dev host ALSA routes to
