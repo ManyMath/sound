@@ -178,12 +178,7 @@ impl WinMMPlayback {
         Self::open_device(wmm, WAVE_MAPPER, channels, rate)
     }
 
-    fn open_device(
-        wmm: Arc<WinMM>,
-        device: u32,
-        channels: u32,
-        rate: u32,
-    ) -> Result<Self, String> {
+    fn open_device(wmm: Arc<WinMM>, device: u32, channels: u32, rate: u32) -> Result<Self, String> {
         let channels = channels.max(1);
         let block_align = channels as u16 * 2;
         let wfx = WaveFormatEx {
