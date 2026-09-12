@@ -5,13 +5,14 @@ name: Precompile binaries
 # sound_flutter without a Rust toolchain. cargokit verifies each download
 # against the public_key in native/sound_cli/cargokit.yaml.
 #
-# Requires two repository secrets:
+# Requires one repository secret:
 #   CARGOKIT_PRIVATE_KEY — the hex private key from `build_tool gen-key`
 #   (GITHUB_TOKEN is provided automatically).
 #
-# Only the platforms with an implemented backend are built here (Linux x86_64
-# and the Android ABIs). Add macOS/Windows/iOS once those backends land — each
-# needs its own runner (macos-latest for Apple, windows-latest for Windows).
+# Only Linux x86_64 and the Android ABIs are built here so far. The macOS,
+# iOS and Windows backends exist too, but need their own runners
+# (macos-latest for Apple, windows-latest for Windows) before prebuilts can be
+# published for them.
 
 on:
   workflow_dispatch:
