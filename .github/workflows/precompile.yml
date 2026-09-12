@@ -18,6 +18,11 @@ on:
   push:
     tags: ['v*']
 
+# build_tool creates the precompiled_<hash> release and uploads assets with
+# GITHUB_TOKEN, which is read-only by default on newer repositories.
+permissions:
+  contents: write
+
 env:
   REPO: ManyMath/sound
   BUILD_TOOL: packages/sound_flutter/cargokit/build_tool
