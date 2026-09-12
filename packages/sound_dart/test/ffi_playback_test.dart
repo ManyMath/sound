@@ -77,268 +77,264 @@ class BytesData {
 void main() {
   final available = NativeLibrary.open() != null;
 
-  group(
-    'FFI playback (end-to-end)',
-    () {
-      setUp(() => Sound.reset());
-      tearDown(() => Sound.reset());
+  group('FFI playback (end-to-end)', () {
+    setUp(() => Sound.reset());
+    tearDown(() => Sound.reset());
 
-      test('plays a WAV to natural completion', () async {
-        final backend = FfiBackend();
-        expect(backend.isAvailable, isTrue);
-        Sound.registerBackend(backend, makeActive: true);
+    test('plays a WAV to natural completion', () async {
+      final backend = FfiBackend();
+      expect(backend.isAvailable, isTrue);
+      Sound.registerBackend(backend, makeActive: true);
 
-        final playback = await Sound.playBytes(buildSineWav(), format: 'wav');
-        expect(playback.isPlaying, isTrue);
-        await playback.onComplete.timeout(const Duration(seconds: 5));
-        expect(playback.state, PlaybackState.completed);
-        await playback.dispose();
-      });
+      final playback = await Sound.playBytes(buildSineWav(), format: 'wav');
+      expect(playback.isPlaying, isTrue);
+      await playback.onComplete.timeout(const Duration(seconds: 5));
+      expect(playback.state, PlaybackState.completed);
+      await playback.dispose();
+    });
 
-      test('plays at reduced volume to completion', () async {
-        Sound.registerBackend(FfiBackend(), makeActive: true);
-        final playback = await Sound.playBytes(
-          buildSineWav(milliseconds: 120),
-          format: 'wav',
-          volume: 0.25,
-        );
-        await playback.setVolume(0.5);
-        await playback.onComplete.timeout(const Duration(seconds: 5));
-        expect(playback.state, PlaybackState.completed);
-        await playback.dispose();
-      });
-
-      test('looping keeps playing past the end until stopped', () async {
-        Sound.registerBackend(FfiBackend(), makeActive: true);
-        final playback = await Sound.playBytes(
-          buildSineWav(milliseconds: 80),
-          format: 'wav',
-          loop: true,
-        );
-        // Well past one pass; a non-looping voice would have completed by now.
-        await Future<void>.delayed(const Duration(milliseconds: 300));
-        expect(playback.state, PlaybackState.playing);
-        await playback.stop();
-        expect(playback.state, PlaybackState.stopped);
-        await playback.dispose();
-      });
-
-      test('plays multiple voices concurrently to completion', () async {
-        Sound.registerBackend(FfiBackend(), makeActive: true);
-        final voices = await Future.wait([
-          Sound.playBytes(
-            buildSineWav(milliseconds: 150, freq: 330),
-            format: 'wav',
-          ),
-          Sound.playBytes(
-            buildSineWav(milliseconds: 150, freq: 440),
-            format: 'wav',
-          ),
-          Sound.playBytes(
-            buildSineWav(milliseconds: 150, freq: 550),
-            format: 'wav',
-          ),
-        ]);
-        expect(voices.every((v) => v.isPlaying), isTrue);
-        await Future.wait(
-          voices.map((v) => v.onComplete.timeout(const Duration(seconds: 5))),
-        );
-        expect(voices.every((v) => v.state == PlaybackState.completed), isTrue);
-        for (final v in voices) {
-          await v.dispose();
-        }
-      });
-
-      test('reports duration and a non-zero advancing position', () async {
-        Sound.registerBackend(FfiBackend(), makeActive: true);
-        final pb = await Sound.playBytes(
-          buildSineWav(sampleRate: 44100, milliseconds: 1500),
-          format: 'wav',
-        );
-        expect(pb.duration, isNotNull);
-        expect((pb.duration!.inMilliseconds - 1500).abs(), lessThan(60));
-        // Allow for stream-open latency before the first frames are written.
-        await Future<void>.delayed(const Duration(milliseconds: 400));
-        expect(pb.position, greaterThan(Duration.zero));
-        await pb.stop();
-        await pb.dispose();
-      });
-
-      test('pause holds position, resume continues to completion', () async {
-        Sound.registerBackend(FfiBackend(), makeActive: true);
-        final pb = await Sound.playBytes(
-          buildSineWav(sampleRate: 44100, milliseconds: 900),
-          format: 'wav',
-        );
-        await Future<void>.delayed(const Duration(milliseconds: 150));
-        await pb.pause();
-        expect(pb.state, PlaybackState.paused);
-        // Let any in-flight write land, then confirm position is frozen.
-        await Future<void>.delayed(const Duration(milliseconds: 80));
-        final p1 = pb.position;
-        await Future<void>.delayed(const Duration(milliseconds: 250));
-        expect((pb.position - p1).inMilliseconds.abs(), lessThan(30));
-        await pb.resume();
-        await pb.onComplete.timeout(const Duration(seconds: 5));
-        expect(pb.state, PlaybackState.completed);
-        await pb.dispose();
-      });
-
-      test('seek near the end finishes quickly', () async {
-        Sound.registerBackend(FfiBackend(), makeActive: true);
-        final pb = await Sound.playBytes(
-          buildSineWav(milliseconds: 4000),
-          format: 'wav',
-        );
-        await pb.seek(const Duration(milliseconds: 3900));
-        await pb.onComplete.timeout(const Duration(seconds: 2));
-        expect(pb.state, PlaybackState.completed);
-        await pb.dispose();
-      });
-
-      test('playUrl fetches over HTTP and plays', () async {
-        Sound.registerBackend(FfiBackend(), makeActive: true);
-        final wav = buildSineWav(milliseconds: 120);
-        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-        server.listen((req) {
-          req.response
-            ..headers.contentType = ContentType('audio', 'wav')
-            ..add(wav);
-          req.response.close();
-        });
-        addTearDown(() => server.close(force: true));
-
-        final url = 'http://${server.address.host}:${server.port}/tone.wav';
-        final pb = await Sound.playUrl(url);
-        await pb.onComplete.timeout(const Duration(seconds: 5));
-        expect(pb.state, PlaybackState.completed);
-        await pb.dispose();
-      });
-
-      test('playUrl sends custom headers with the request', () async {
-        Sound.registerBackend(FfiBackend(), makeActive: true);
-        final wav = buildSineWav(milliseconds: 120);
-        String? receivedAuth;
-        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-        server.listen((req) {
-          receivedAuth = req.headers.value('authorization');
-          req.response
-            ..headers.contentType = ContentType('audio', 'wav')
-            ..add(wav);
-          req.response.close();
-        });
-        addTearDown(() => server.close(force: true));
-
-        final url = 'http://${server.address.host}:${server.port}/tone.wav';
-        final pb = await Sound.playUrl(
-          url,
-          headers: {'Authorization': 'Bearer test-token-123'},
-        );
-        await pb.onComplete.timeout(const Duration(seconds: 5));
-        expect(receivedAuth, 'Bearer test-token-123');
-        await pb.dispose();
-      });
-
-      test(
-        'a UriSource voice reports connecting before the format is known',
-        () async {
-          Sound.registerBackend(FfiBackend(), makeActive: true);
-          final wav = buildSineWav(milliseconds: 120);
-          final gate = Completer<void>();
-          final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-          server.listen((req) async {
-            // Holds the response open so `play()` observably returns before
-            // the stream's format is known, proving it never blocked on this
-            // request.
-            await gate.future;
-            req.response
-              ..headers.contentType = ContentType('audio', 'wav')
-              ..add(wav);
-            await req.response.close();
-          });
-          addTearDown(() => server.close(force: true));
-
-          final url = 'http://${server.address.host}:${server.port}/tone.wav';
-          final pb = await Sound.load(SoundSource.uri(Uri.parse(url)));
-          await pb.play();
-          expect(pb.state, PlaybackState.connecting);
-          expect(pb.duration, isNull);
-
-          gate.complete();
-          await pb.onComplete.timeout(const Duration(seconds: 5));
-          expect(pb.state, PlaybackState.completed);
-          await pb.dispose();
-        },
+    test('plays at reduced volume to completion', () async {
+      Sound.registerBackend(FfiBackend(), makeActive: true);
+      final playback = await Sound.playBytes(
+        buildSineWav(milliseconds: 120),
+        format: 'wav',
+        volume: 0.25,
       );
+      await playback.setVolume(0.5);
+      await playback.onComplete.timeout(const Duration(seconds: 5));
+      expect(playback.state, PlaybackState.completed);
+      await playback.dispose();
+    });
 
-      test('playUrl surfaces a clear error on HTTP failure', () async {
+    test('looping keeps playing past the end until stopped', () async {
+      Sound.registerBackend(FfiBackend(), makeActive: true);
+      final playback = await Sound.playBytes(
+        buildSineWav(milliseconds: 80),
+        format: 'wav',
+        loop: true,
+      );
+      // Well past one pass; a non-looping voice would have completed by now.
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      expect(playback.state, PlaybackState.playing);
+      await playback.stop();
+      expect(playback.state, PlaybackState.stopped);
+      await playback.dispose();
+    });
+
+    test('plays multiple voices concurrently to completion', () async {
+      Sound.registerBackend(FfiBackend(), makeActive: true);
+      final voices = await Future.wait([
+        Sound.playBytes(
+          buildSineWav(milliseconds: 150, freq: 330),
+          format: 'wav',
+        ),
+        Sound.playBytes(
+          buildSineWav(milliseconds: 150, freq: 440),
+          format: 'wav',
+        ),
+        Sound.playBytes(
+          buildSineWav(milliseconds: 150, freq: 550),
+          format: 'wav',
+        ),
+      ]);
+      expect(voices.every((v) => v.isPlaying), isTrue);
+      await Future.wait(
+        voices.map((v) => v.onComplete.timeout(const Duration(seconds: 5))),
+      );
+      expect(voices.every((v) => v.state == PlaybackState.completed), isTrue);
+      for (final v in voices) {
+        await v.dispose();
+      }
+    });
+
+    test('reports duration and a non-zero advancing position', () async {
+      Sound.registerBackend(FfiBackend(), makeActive: true);
+      final pb = await Sound.playBytes(
+        buildSineWav(sampleRate: 44100, milliseconds: 1500),
+        format: 'wav',
+      );
+      expect(pb.duration, isNotNull);
+      expect((pb.duration!.inMilliseconds - 1500).abs(), lessThan(60));
+      // Allow for stream-open latency before the first frames are written.
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      expect(pb.position, greaterThan(Duration.zero));
+      await pb.stop();
+      await pb.dispose();
+    });
+
+    test('pause holds position, resume continues to completion', () async {
+      Sound.registerBackend(FfiBackend(), makeActive: true);
+      final pb = await Sound.playBytes(
+        buildSineWav(sampleRate: 44100, milliseconds: 900),
+        format: 'wav',
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      await pb.pause();
+      expect(pb.state, PlaybackState.paused);
+      // Let any in-flight write land, then confirm position is frozen.
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      final p1 = pb.position;
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      expect((pb.position - p1).inMilliseconds.abs(), lessThan(30));
+      await pb.resume();
+      await pb.onComplete.timeout(const Duration(seconds: 5));
+      expect(pb.state, PlaybackState.completed);
+      await pb.dispose();
+    });
+
+    test('seek near the end finishes quickly', () async {
+      Sound.registerBackend(FfiBackend(), makeActive: true);
+      final pb = await Sound.playBytes(
+        buildSineWav(milliseconds: 4000),
+        format: 'wav',
+      );
+      await pb.seek(const Duration(milliseconds: 3900));
+      await pb.onComplete.timeout(const Duration(seconds: 2));
+      expect(pb.state, PlaybackState.completed);
+      await pb.dispose();
+    });
+
+    test('playUrl fetches over HTTP and plays', () async {
+      Sound.registerBackend(FfiBackend(), makeActive: true);
+      final wav = buildSineWav(milliseconds: 120);
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((req) {
+        req.response
+          ..headers.contentType = ContentType('audio', 'wav')
+          ..add(wav);
+        req.response.close();
+      });
+      addTearDown(() => server.close(force: true));
+
+      final url = 'http://${server.address.host}:${server.port}/tone.wav';
+      final pb = await Sound.playUrl(url);
+      await pb.onComplete.timeout(const Duration(seconds: 5));
+      expect(pb.state, PlaybackState.completed);
+      await pb.dispose();
+    });
+
+    test('playUrl sends custom headers with the request', () async {
+      Sound.registerBackend(FfiBackend(), makeActive: true);
+      final wav = buildSineWav(milliseconds: 120);
+      String? receivedAuth;
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((req) {
+        receivedAuth = req.headers.value('authorization');
+        req.response
+          ..headers.contentType = ContentType('audio', 'wav')
+          ..add(wav);
+        req.response.close();
+      });
+      addTearDown(() => server.close(force: true));
+
+      final url = 'http://${server.address.host}:${server.port}/tone.wav';
+      final pb = await Sound.playUrl(
+        url,
+        headers: {'Authorization': 'Bearer test-token-123'},
+      );
+      await pb.onComplete.timeout(const Duration(seconds: 5));
+      expect(receivedAuth, 'Bearer test-token-123');
+      await pb.dispose();
+    });
+
+    test(
+      'a UriSource voice reports connecting before the format is known',
+      () async {
         Sound.registerBackend(FfiBackend(), makeActive: true);
+        final wav = buildSineWav(milliseconds: 120);
+        final gate = Completer<void>();
         final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-        server.listen((req) {
-          req.response.statusCode = 404;
-          req.response.close();
+        server.listen((req) async {
+          // Holds the response open so `play()` observably returns before
+          // the stream's format is known, proving it never blocked on this
+          // request.
+          await gate.future;
+          req.response
+            ..headers.contentType = ContentType('audio', 'wav')
+            ..add(wav);
+          await req.response.close();
         });
         addTearDown(() => server.close(force: true));
-        final url = 'http://${server.address.host}:${server.port}/missing.wav';
-        // Connecting, probing, and decoding the first chunk all happen on a
-        // background thread so playUrl() itself never blocks on network I/O
-        // (and so never fails synchronously) - a connect/HTTP-status failure
-        // surfaces through onComplete instead, the same as a failure partway
-        // through an already-playing stream.
-        final pb = await Sound.playUrl(url);
-        await expectLater(pb.onComplete, throwsA(isA<PlaybackException>()));
-      });
 
-      test('replaying the same handle restarts and completes', () async {
-        Sound.registerBackend(FfiBackend(), makeActive: true);
-        final pb = await Sound.playBytes(
-          buildSineWav(milliseconds: 80),
-          format: 'wav',
-        );
-        await pb.onComplete.timeout(const Duration(seconds: 5));
-        // Play the same handle again; it should restart and complete.
+        final url = 'http://${server.address.host}:${server.port}/tone.wav';
+        final pb = await Sound.load(SoundSource.uri(Uri.parse(url)));
         await pb.play();
-        expect(pb.isPlaying, isTrue);
+        expect(pb.state, PlaybackState.connecting);
+        expect(pb.duration, isNull);
+
+        gate.complete();
         await pb.onComplete.timeout(const Duration(seconds: 5));
         expect(pb.state, PlaybackState.completed);
         await pb.dispose();
-      });
+      },
+    );
 
-      test('dispose is idempotent and stop-after-dispose is safe', () async {
-        Sound.registerBackend(FfiBackend(), makeActive: true);
-        final pb = await Sound.playBytes(
-          buildSineWav(milliseconds: 80),
-          format: 'wav',
-        );
-        await pb.dispose();
-        await pb.dispose(); // no throw
-        await pb.stop(); // no throw
-        expect(pb.state, PlaybackState.disposed);
+    test('playUrl surfaces a clear error on HTTP failure', () async {
+      Sound.registerBackend(FfiBackend(), makeActive: true);
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((req) {
+        req.response.statusCode = 404;
+        req.response.close();
       });
+      addTearDown(() => server.close(force: true));
+      final url = 'http://${server.address.host}:${server.port}/missing.wav';
+      // Connecting, probing, and decoding the first chunk all happen on a
+      // background thread so playUrl() itself never blocks on network I/O
+      // (and so never fails synchronously) - a connect/HTTP-status failure
+      // surfaces through onComplete instead, the same as a failure partway
+      // through an already-playing stream.
+      final pb = await Sound.playUrl(url);
+      await expectLater(pb.onComplete, throwsA(isA<PlaybackException>()));
+    });
 
-      test('plays a stereo WAV to completion', () async {
-        Sound.registerBackend(FfiBackend(), makeActive: true);
-        final pb = await Sound.playBytes(
-          buildSineWav(sampleRate: 44100, milliseconds: 150, channels: 2),
-          format: 'wav',
-        );
-        await pb.onComplete.timeout(const Duration(seconds: 5));
-        expect(pb.state, PlaybackState.completed);
-        await pb.dispose();
-      });
+    test('replaying the same handle restarts and completes', () async {
+      Sound.registerBackend(FfiBackend(), makeActive: true);
+      final pb = await Sound.playBytes(
+        buildSineWav(milliseconds: 80),
+        format: 'wav',
+      );
+      await pb.onComplete.timeout(const Duration(seconds: 5));
+      // Play the same handle again; it should restart and complete.
+      await pb.play();
+      expect(pb.isPlaying, isTrue);
+      await pb.onComplete.timeout(const Duration(seconds: 5));
+      expect(pb.state, PlaybackState.completed);
+      await pb.dispose();
+    });
 
-      test('stop ends playback early', () async {
-        Sound.registerBackend(FfiBackend(), makeActive: true);
-        final playback = await Sound.playBytes(
-          buildSineWav(milliseconds: 2000),
-          format: 'wav',
-        );
-        await Future<void>.delayed(const Duration(milliseconds: 100));
-        await playback.stop();
-        expect(playback.state, PlaybackState.stopped);
-        await playback.dispose();
-      });
-    },
-    skip: available ? false : 'sound_cli library not built',
-  );
+    test('dispose is idempotent and stop-after-dispose is safe', () async {
+      Sound.registerBackend(FfiBackend(), makeActive: true);
+      final pb = await Sound.playBytes(
+        buildSineWav(milliseconds: 80),
+        format: 'wav',
+      );
+      await pb.dispose();
+      await pb.dispose(); // no throw
+      await pb.stop(); // no throw
+      expect(pb.state, PlaybackState.disposed);
+    });
+
+    test('plays a stereo WAV to completion', () async {
+      Sound.registerBackend(FfiBackend(), makeActive: true);
+      final pb = await Sound.playBytes(
+        buildSineWav(sampleRate: 44100, milliseconds: 150, channels: 2),
+        format: 'wav',
+      );
+      await pb.onComplete.timeout(const Duration(seconds: 5));
+      expect(pb.state, PlaybackState.completed);
+      await pb.dispose();
+    });
+
+    test('stop ends playback early', () async {
+      Sound.registerBackend(FfiBackend(), makeActive: true);
+      final playback = await Sound.playBytes(
+        buildSineWav(milliseconds: 2000),
+        format: 'wav',
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await playback.stop();
+      expect(playback.state, PlaybackState.stopped);
+      await playback.dispose();
+    });
+  }, skip: available ? false : 'sound_cli library not built');
 }
