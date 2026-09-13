@@ -49,7 +49,7 @@ android {
 }
 
 // Build the shared `sound_cli` Rust crate via cargokit. The crate lives at
-// the repo root and is shared with the pure-Dart `sound` package; cargokit
+// the repo root and is shared with the pure-Dart `sound_dart` package; cargokit
 // drops the per-ABI libsound_cli.so into jniLibs so it is packaged in the
 // APK and resolvable by DynamicLibrary.open('libsound_cli.so').
 apply from: "../cargokit/gradle/plugin.gradle"

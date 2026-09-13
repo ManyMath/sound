@@ -1,4 +1,4 @@
-//! C ABI for the `sound` package's native playback.
+//! C ABI for `sound_dart`'s native playback.
 //!
 //! The Dart `FfiBackend` calls these functions. Each `sound_play_*` call
 //! decodes the audio and spawns a playback thread, returning an opaque voice
