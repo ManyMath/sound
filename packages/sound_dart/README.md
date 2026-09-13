@@ -7,5 +7,27 @@ native audio over FFI.
 For Flutter apps, see the `sound_flutter` package, which builds the native 
 library for you via cargokit and should 'just work'.
 
-The only build-time requirement beyond Dart/Flutter is Rust.  That may be 
-worked-around with precompiled binaries (TODO).
+The only build-time requirement beyond Dart/Flutter is Rust.  Precompiled
+binaries are planned to remove that.
+
+```dart
+import 'package:sound_dart/sound_dart.dart';
+
+final playback = await Sound.playFile('chime.wav', volume: 0.8);
+await playback.onComplete;
+await playback.dispose();
+```
+
+## Native library (CLI use)
+
+Outside Flutter, nothing builds the native library for you. Build the
+`sound_cli` crate from [the repository](https://github.com/ManyMath/sound):
+
+```sh
+cargo build --release --manifest-path native/sound_cli/Cargo.toml
+```
+
+and point `SOUND_DART_LIB` at the result (`libsound_cli.so`,
+`libsound_cli.dylib`, or `sound_cli.dll` under
+`native/sound_cli/target/release/`). Running from inside the repository finds
+it automatically. Without the library, `Sound` falls back to a silent backend.
