@@ -41,7 +41,3 @@ flutter:
         ffiPlugin: true
       windows:
         ffiPlugin: true
-
-  # A small bundled tone used by the example/tests of asset playback.
-  assets:
-    - assets/test_tone.wav
