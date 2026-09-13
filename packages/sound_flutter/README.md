@@ -1,7 +1,7 @@
 # sound_flutter
 
-Flutter integration for [`sound_dart`](../sound_dart): cross-platform audio 
-with no system dependencies for users or devs to install.
+Flutter integration for [`sound_dart`](https://pub.dev/packages/sound_dart):
+cross-platform audio with no system dependencies for users or devs to install.
 
 This package builds the shared `sound_cli` Rust crate automatically (via
 [cargokit](https://github.com/ManyMath/cargokit)) and bundles it with your app,
@@ -25,7 +25,13 @@ is set up for cargokit precompiled binaries:
   `CARGOKIT_PRIVATE_KEY` repository secret: the hex private key printed by
   `dart run build_tool gen-key` (keep it secret; never commit it).
 
-Once a release exists, consuming builds download the matching signed binary
-instead of invoking cargo; with none present, cargokit builds from source.
+cargokit only uses a prebuilt binary when Rust isn't installed (or the app
+opts in with `use_precompiled_binaries: true` in its `cargokit_options.yaml`)
+and a signed release for the current crate exists; otherwise it builds from
+source. The workflow currently publishes Linux x86_64 and Android binaries
+only.
 
+## Requirements
 
+- Android: `minSdk` 26 or higher (the AAudio backend needs API 26).
+- iOS 13 or later; macOS 10.15 or later.
