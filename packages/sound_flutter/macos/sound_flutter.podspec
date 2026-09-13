@@ -29,7 +29,7 @@ sound_flutter plugin for use over FFI.
 
   s.dependency 'FlutterMacOS'
 
-  s.platform = :osx, '10.11'
+  s.platform = :osx, '10.15'
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
     'OTHER_LDFLAGS' => '-force_load ${BUILT_PRODUCTS_DIR}/libsound_cli.a',
