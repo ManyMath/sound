@@ -5,13 +5,14 @@
 Pod::Spec.new do |s|
   s.name             = 'sound_flutter'
   s.version          = '0.0.1'
-  s.summary          = 'A new Flutter FFI plugin project.'
+  s.summary          = 'Cross-platform audio playback for Flutter.'
   s.description      = <<-DESC
-A new Flutter FFI plugin project.
+Builds the sound_cli Rust audio library via cargokit and links it into the
+sound_flutter plugin for use over FFI.
                        DESC
-  s.homepage         = 'http://example.com'
+  s.homepage         = 'https://github.com/ManyMath/sound'
   s.license          = { :file => '../LICENSE' }
-  s.author           = { 'Your Company' => 'email@example.com' }
+  s.author           = 'ManyMath LLC'
 
   s.source           = { :path => '.' }
   s.source_files     = 'Classes/**/*'
