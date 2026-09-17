@@ -219,10 +219,12 @@ fn root_store() -> &'static Arc<RootCertStore> {
     })
 }
 
+const MAX_REDIRECTS: usize = 5;
+
 /// Issues a GET request to `url`, sending `headers` (name, value pairs), and
 /// returns the parsed response with a `Read` body positioned right after the
-/// response headers. Follows up to 5 redirects (3xx with a `Location`
-/// header).
+/// response headers. Follows up to [MAX_REDIRECTS] redirects (3xx with a
+/// `Location` header).
 ///
 /// Caller headers (which typically carry credentials, e.g. `Authorization`)
 /// are only sent to the origin of the original URL: a redirect to a different
@@ -235,7 +237,8 @@ fn root_store() -> &'static Arc<RootCertStore> {
 pub fn get(url: &str, headers: &[(String, String)]) -> Result<Response, String> {
     let mut current = url.to_string();
     let mut send_headers = true;
-    for _ in 0..5 {
+    // The original request plus one per followed redirect.
+    for _ in 0..=MAX_REDIRECTS {
         let response = get_once(&current, if send_headers { headers } else { &[] })?;
         if (300..400).contains(&response.status) {
             if let Some(location) = response.header("location") {
@@ -573,6 +576,39 @@ mod tests {
         let mut body = Vec::new();
         response.read_to_end(&mut body).unwrap();
         assert_eq!(body, b"real");
+    }
+
+    /// Serves a chain of `redirects` same-origin 302s (`/r0` -> `/r1` -> ...)
+    /// ending in a 200, returning the URL of the first hop.
+    fn serve_redirect_chain(redirects: usize) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            for i in 0..=redirects {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut discard = [0u8; 4096];
+                let _ = stream.read(&mut discard);
+                let response = if i < redirects {
+                    format!(
+                        "HTTP/1.1 302 Found\r\nLocation: /r{}\r\nContent-Length: 0\r\n\r\n",
+                        i + 1
+                    )
+                } else {
+                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_string()
+                };
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        format!("http://{addr}/r0")
+    }
+
+    #[test]
+    fn follows_exactly_max_redirects() {
+        let response = get(&serve_redirect_chain(MAX_REDIRECTS), &[]).unwrap();
+        assert_eq!(response.status, 200);
+        assert!(get(&serve_redirect_chain(MAX_REDIRECTS + 1), &[]).is_err());
     }
 
     #[test]
