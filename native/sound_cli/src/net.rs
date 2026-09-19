@@ -173,6 +173,7 @@ impl Read for Body {
 // bound.
 const MAX_LINE_BYTES: usize = 16 * 1024;
 const MAX_HEADER_LINES: usize = 128;
+const MAX_INTERIM_RESPONSES: usize = 8;
 
 /// Reads one CRLF-terminated line (without the CRLF) from a buffered reader.
 /// Bytes that are not UTF-8 (servers do send Latin-1 header values, e.g.
@@ -500,11 +501,22 @@ fn get_once(url: &str, headers: &[(String, String)]) -> Result<Response, String>
         .map_err(|e| format!("write request: {e}"))?;
     conn.flush().map_err(|e| format!("flush request: {e}"))?;
 
-    let status_line = read_line(&mut conn).map_err(|e| format!("read status line: {e}"))?;
-    let status = parse_status(&status_line)?;
-
-    let response_headers =
-        read_header_lines(&mut conn).map_err(|e| format!("read headers: {e}"))?;
+    // Interim 1xx responses (100 Continue, 103 Early Hints) may precede the
+    // real one and have no body: skip them. 101 Switching Protocols is final
+    // (and never asked for here), so it is returned like any other status.
+    let mut interim = 0;
+    let (status, response_headers) = loop {
+        let status_line = read_line(&mut conn).map_err(|e| format!("read status line: {e}"))?;
+        let status = parse_status(&status_line)?;
+        let headers = read_header_lines(&mut conn).map_err(|e| format!("read headers: {e}"))?;
+        if !(100..200).contains(&status) || status == 101 {
+            break (status, headers);
+        }
+        interim += 1;
+        if interim > MAX_INTERIM_RESPONSES {
+            return Err("too many interim (1xx) responses".to_string());
+        }
+    };
 
     let body = body_for(conn, &response_headers);
     Ok(Response {
@@ -733,6 +745,22 @@ mod tests {
         let mut body = Vec::new();
         let err = response.read_to_end(&mut body).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn skips_interim_1xx_responses() {
+        let base = serve_once(
+            b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 103 Early Hints\r\nLink: </a.css>; rel=preload\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello",
+        );
+        let mut response = get(&format!("{base}/track"), &[]).unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(response.header("link"), None);
+        let mut body = Vec::new();
+        response.read_to_end(&mut body).unwrap();
+        assert_eq!(body, b"hello");
+
+        let endless = b"HTTP/1.1 103 Early Hints\r\n\r\n".repeat(MAX_INTERIM_RESPONSES + 1);
+        assert!(get(&format!("{}/track", serve_once(endless)), &[]).is_err());
     }
 
     #[test]
