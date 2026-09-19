@@ -179,6 +179,8 @@ const MAX_LINE_BYTES: usize = 16 * 1024;
 const MAX_HEADER_LINES: usize = 128;
 
 /// Reads one CRLF-terminated line (without the CRLF) from a buffered reader.
+/// Bytes that are not UTF-8 (servers do send Latin-1 header values, e.g.
+/// Icecast's `icy-name`) are replaced rather than failing the response.
 fn read_line<R: BufRead>(r: &mut R) -> io::Result<String> {
     let mut line = Vec::new();
     loop {
@@ -207,7 +209,7 @@ fn read_line<R: BufRead>(r: &mut R) -> io::Result<String> {
         }
         line.push(byte[0]);
     }
-    String::from_utf8(line).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    Ok(String::from_utf8_lossy(&line).into_owned())
 }
 
 fn root_store() -> &'static Arc<RootCertStore> {
@@ -688,6 +690,18 @@ mod tests {
         let response = get(&serve_redirect_chain(MAX_REDIRECTS), &[]).unwrap();
         assert_eq!(response.status, 200);
         assert!(get(&serve_redirect_chain(MAX_REDIRECTS + 1), &[]).is_err());
+    }
+
+    #[test]
+    fn tolerates_non_utf8_header_values() {
+        let mut response = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nicy-name: Caf".to_vec();
+        response.push(0xE9); // Latin-1 e-acute
+        response.extend_from_slice(b" Radio\r\n\r\nhello");
+        let mut response = get(&format!("{}/track", serve_once(response)), &[]).unwrap();
+        assert_eq!(response.header("icy-name"), Some("Caf\u{FFFD} Radio"));
+        let mut body = Vec::new();
+        response.read_to_end(&mut body).unwrap();
+        assert_eq!(body, b"hello");
     }
 
     #[test]
