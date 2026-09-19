@@ -141,12 +141,7 @@ impl Read for Body {
                         // Terminal chunk: consume the trailing CRLF (and any
                         // trailer headers, which this client ignores) up to
                         // the empty line that ends the response.
-                        loop {
-                            let line = read_line(conn)?;
-                            if line.is_empty() {
-                                break;
-                            }
-                        }
+                        read_header_lines(conn)?;
                         *done = true;
                         return Ok(0);
                     }
@@ -173,8 +168,9 @@ impl Read for Body {
     }
 }
 
-// Caps on what a server may feed us before the body starts, so a hostile or
-// broken server cannot grow memory without bound.
+// Caps on the header (and chunked trailer) lines a server may feed us, so a
+// hostile or broken server cannot grow memory, or keep us reading, without
+// bound.
 const MAX_LINE_BYTES: usize = 16 * 1024;
 const MAX_HEADER_LINES: usize = 128;
 
@@ -210,6 +206,27 @@ fn read_line<R: BufRead>(r: &mut R) -> io::Result<String> {
         line.push(byte[0]);
     }
     Ok(String::from_utf8_lossy(&line).into_owned())
+}
+
+/// Reads header lines up to the empty line that ends them (a response's
+/// headers, or a chunked body's trailers), returning lowercased names and
+/// trimmed values. Every line counts against [MAX_HEADER_LINES], malformed
+/// (colon-less) ones included, so a server cannot stream lines forever.
+fn read_header_lines<R: BufRead>(r: &mut R) -> io::Result<Vec<(String, String)>> {
+    let mut headers = Vec::new();
+    for _ in 0..=MAX_HEADER_LINES {
+        let line = read_line(r)?;
+        if line.is_empty() {
+            return Ok(headers);
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            headers.push((name.trim().to_ascii_lowercase(), value.trim().to_string()));
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "too many header lines",
+    ))
 }
 
 fn root_store() -> &'static Arc<RootCertStore> {
@@ -486,20 +503,8 @@ fn get_once(url: &str, headers: &[(String, String)]) -> Result<Response, String>
     let status_line = read_line(&mut conn).map_err(|e| format!("read status line: {e}"))?;
     let status = parse_status(&status_line)?;
 
-    let mut response_headers = Vec::new();
-    loop {
-        let line = read_line(&mut conn).map_err(|e| format!("read header line: {e}"))?;
-        if line.is_empty() {
-            break;
-        }
-        if response_headers.len() >= MAX_HEADER_LINES {
-            return Err("too many response headers".to_string());
-        }
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        response_headers.push((name.trim().to_ascii_lowercase(), value.trim().to_string()));
-    }
+    let response_headers =
+        read_header_lines(&mut conn).map_err(|e| format!("read headers: {e}"))?;
 
     let body = body_for(conn, &response_headers);
     Ok(Response {
@@ -702,6 +707,32 @@ mod tests {
         let mut body = Vec::new();
         response.read_to_end(&mut body).unwrap();
         assert_eq!(body, b"hello");
+    }
+
+    #[test]
+    fn caps_header_lines_including_malformed_ones() {
+        // Colon-less lines used to be skipped without counting, so a server
+        // could send them forever.
+        let mut response = b"HTTP/1.1 200 OK\r\n".to_vec();
+        for _ in 0..=MAX_HEADER_LINES {
+            response.extend_from_slice(b"x\r\n");
+        }
+        response.extend_from_slice(b"Content-Length: 2\r\n\r\nok");
+        assert!(get(&format!("{}/track", serve_once(response)), &[]).is_err());
+    }
+
+    #[test]
+    fn caps_chunked_trailer_lines() {
+        let mut response =
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n".to_vec();
+        for _ in 0..=MAX_HEADER_LINES {
+            response.extend_from_slice(b"X-Trailer: 1\r\n");
+        }
+        response.extend_from_slice(b"\r\n");
+        let mut response = get(&format!("{}/track", serve_once(response)), &[]).unwrap();
+        let mut body = Vec::new();
+        let err = response.read_to_end(&mut body).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]
