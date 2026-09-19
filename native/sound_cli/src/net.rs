@@ -262,17 +262,96 @@ fn same_origin(a: &str, b: &str) -> Result<bool, String> {
     Ok(pa.tls == pb.tls && pa.host.eq_ignore_ascii_case(&pb.host) && pa.port == pb.port)
 }
 
+/// Resolves a `Location` value against the URL that returned it, per RFC
+/// 3986 section 5.2: absolute (`https://host/x`), scheme-relative
+/// (`//host/x`), absolute-path (`/x`), path-relative (`x`, `../x`), and
+/// query-only (`?q`) references.
 fn resolve_redirect(base: &str, location: &str) -> Result<String, String> {
-    if location.starts_with("http://") || location.starts_with("https://") {
+    if has_scheme(location) {
+        // Absolute; parse_url rejects any scheme other than http(s) later.
         return Ok(location.to_string());
     }
     let parsed = parse_url(base)?;
     let scheme = if parsed.tls { "https" } else { "http" };
-    if location.starts_with('/') {
-        Ok(format!("{scheme}://{}{location}", parsed.host_header()))
-    } else {
-        Err(format!("unsupported relative redirect: {location}"))
+    if let Some(rest) = location.strip_prefix("//") {
+        return Ok(format!("{scheme}://{rest}"));
     }
+    // A fragment never reaches the server, so drop it before merging.
+    let location = location.split('#').next().unwrap_or("");
+    let (base_path, _) = split_query(&parsed.path);
+    let target = if location.is_empty() {
+        parsed.path.clone()
+    } else if location.starts_with('?') {
+        format!("{base_path}{location}")
+    } else {
+        let (path, query) = split_query(location);
+        let merged = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            // Relative to the base path's "directory" (up to its last '/';
+            // parse_url guarantees the path starts with one).
+            let dir = &base_path[..=base_path.rfind('/').unwrap_or(0)];
+            format!("{dir}{path}")
+        };
+        let mut target = remove_dot_segments(&merged);
+        if let Some(query) = query {
+            target.push('?');
+            target.push_str(query);
+        }
+        target
+    };
+    Ok(format!("{scheme}://{}{target}", parsed.host_header()))
+}
+
+/// Whether `reference` starts with a URI scheme (`ALPHA *(ALPHA / DIGIT /
+/// "+" / "-" / ".") ":"`), i.e. is an absolute URL rather than a relative one.
+fn has_scheme(reference: &str) -> bool {
+    let Some((scheme, _)) = reference.split_once(':') else {
+        return false;
+    };
+    let mut bytes = scheme.bytes();
+    bytes.next().is_some_and(|b| b.is_ascii_alphabetic())
+        && bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
+}
+
+/// Splits `path?query` into the path and the query (without its `?`).
+fn split_query(reference: &str) -> (&str, Option<&str>) {
+    match reference.split_once('?') {
+        Some((path, query)) => (path, Some(query)),
+        None => (reference, None),
+    }
+}
+
+/// Resolves `.` and `..` segments in an absolute path (RFC 3986 section
+/// 5.2.4); `..` never climbs above the root.
+fn remove_dot_segments(path: &str) -> String {
+    let segments: Vec<&str> = path.split('/').skip(1).collect();
+    let mut out: Vec<&str> = Vec::new();
+    for (i, segment) in segments.iter().enumerate() {
+        match *segment {
+            "." => {}
+            ".." => {
+                out.pop();
+            }
+            segment => {
+                out.push(segment);
+                continue;
+            }
+        }
+        // A trailing dot segment still names a directory: keep the final '/'.
+        if i + 1 == segments.len() {
+            out.push("");
+        }
+    }
+    format!("/{}", out.join("/"))
+}
+
+/// Strips `scheme` (e.g. `https://`) from the front of `url`, ignoring ASCII
+/// case as RFC 3986 requires for schemes.
+fn strip_scheme<'a>(url: &'a str, scheme: &str) -> Option<&'a str> {
+    let head = url.get(..scheme.len())?;
+    head.eq_ignore_ascii_case(scheme)
+        .then(|| &url[scheme.len()..])
 }
 
 struct ParsedUrl {
@@ -292,9 +371,9 @@ impl ParsedUrl {
 }
 
 fn parse_url(url: &str) -> Result<ParsedUrl, String> {
-    let (tls, rest) = if let Some(rest) = url.strip_prefix("https://") {
+    let (tls, rest) = if let Some(rest) = strip_scheme(url, "https://") {
         (true, rest)
-    } else if let Some(rest) = url.strip_prefix("http://") {
+    } else if let Some(rest) = strip_scheme(url, "http://") {
         (false, rest)
     } else {
         return Err(format!("unsupported URL scheme: {url}"));
@@ -474,14 +553,14 @@ mod tests {
     /// Spawns a one-shot HTTP server on localhost that writes `response` raw
     /// bytes to the first connection it accepts, then returns its URL prefix
     /// (`http://127.0.0.1:PORT`).
-    fn serve_once(response: &'static [u8]) -> String {
+    fn serve_once(response: impl AsRef<[u8]> + Send + 'static) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let mut discard = [0u8; 4096];
             let _ = stream.read(&mut discard); // drain the request
-            stream.write_all(response).unwrap();
+            stream.write_all(response.as_ref()).unwrap();
         });
         format!("http://{addr}")
     }
@@ -682,6 +761,58 @@ mod tests {
         let mut body = Vec::new();
         response.read_to_end(&mut body).unwrap();
         assert_eq!(body, b"clean");
+    }
+
+    #[test]
+    fn follows_scheme_relative_redirect_to_its_host() {
+        // `Location: //host/x` names another host; it used to be resolved
+        // as a path on the origin (`GET //host/x`).
+        let target = TcpListener::bind("127.0.0.1:0").unwrap();
+        let target_addr = target.local_addr().unwrap();
+        thread::spawn(move || {
+            let (mut stream, _) = target.accept().unwrap();
+            let mut discard = [0u8; 4096];
+            let _ = stream.read(&mut discard);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nreal")
+                .unwrap();
+        });
+        let base = serve_once(format!(
+            "HTTP/1.1 302 Found\r\nLocation: //{target_addr}/real\r\nContent-Length: 0\r\n\r\n"
+        ));
+        let mut response = get(&format!("{base}/track"), &[]).unwrap();
+        let mut body = Vec::new();
+        response.read_to_end(&mut body).unwrap();
+        assert_eq!(body, b"real");
+    }
+
+    #[test]
+    fn resolves_relative_redirect_references() {
+        let base = "http://example.com:8080/a/b/track.mp3?x=1";
+        for (location, want) in [
+            ("https://cdn.example.com/x", "https://cdn.example.com/x"),
+            ("HTTP://cdn.example.com/x", "HTTP://cdn.example.com/x"),
+            ("//cdn.example.com/x?y", "http://cdn.example.com/x?y"),
+            ("/root", "http://example.com:8080/root"),
+            ("other.mp3", "http://example.com:8080/a/b/other.mp3"),
+            (
+                "./c/other.mp3?q",
+                "http://example.com:8080/a/b/c/other.mp3?q",
+            ),
+            ("../other.mp3", "http://example.com:8080/a/other.mp3"),
+            ("../../../../x", "http://example.com:8080/x"),
+            ("..", "http://example.com:8080/a/"),
+            ("/a/./b/../c", "http://example.com:8080/a/c"),
+            ("?y=2", "http://example.com:8080/a/b/track.mp3?y=2"),
+            ("other.mp3#frag", "http://example.com:8080/a/b/other.mp3"),
+        ] {
+            assert_eq!(
+                resolve_redirect(base, location).unwrap(),
+                want,
+                "{location}"
+            );
+        }
+        assert!(parse_url("HTTPS://Example.com/a").unwrap().tls);
     }
 
     #[test]
