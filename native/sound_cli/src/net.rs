@@ -134,9 +134,12 @@ impl Read for Body {
                     // Start of a new chunk: read its size line.
                     let size_line = read_line(conn, None)?;
                     let size_str = size_line.split(';').next().unwrap_or("").trim();
-                    let size = u64::from_str_radix(size_str, 16).map_err(|_| {
-                        io::Error::new(io::ErrorKind::InvalidData, "bad chunk size")
-                    })?;
+                    let bad_size = || io::Error::new(io::ErrorKind::InvalidData, "bad chunk size");
+                    // Hex digits only: from_str_radix alone also takes a sign.
+                    if !is_all(size_str, |b| b.is_ascii_hexdigit()) {
+                        return Err(bad_size());
+                    }
+                    let size = u64::from_str_radix(size_str, 16).map_err(|_| bad_size())?;
                     if size == 0 {
                         // Terminal chunk: consume the trailing CRLF (and any
                         // trailer headers, which this client ignores) up to
@@ -157,9 +160,16 @@ impl Read for Body {
                 }
                 *remaining -= n as u64;
                 if *remaining == 0 {
-                    // Consume the CRLF that follows every chunk's data.
+                    // Consume the CRLF that follows every chunk's data; any
+                    // other bytes there mean the framing is off.
                     let mut crlf = [0u8; 2];
                     conn.read_exact(&mut crlf)?;
+                    if crlf != *b"\r\n" {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "missing CRLF after chunk data",
+                        ));
+                    }
                 }
                 Ok(n)
             }
@@ -546,7 +556,7 @@ fn get_once(
         }
     };
 
-    let body = body_for(conn, &response_headers);
+    let body = body_for(conn, &response_headers)?;
     Ok(Response {
         status,
         headers: response_headers,
@@ -554,7 +564,7 @@ fn get_once(
     })
 }
 
-fn body_for(conn: Conn, headers: &[(String, String)]) -> Body {
+fn body_for(conn: Conn, headers: &[(String, String)]) -> Result<Body, String> {
     let get = |name: &str| {
         headers
             .iter()
@@ -563,20 +573,47 @@ fn body_for(conn: Conn, headers: &[(String, String)]) -> Body {
     };
     if let Some(encoding) = get("transfer-encoding") {
         if encoding.eq_ignore_ascii_case("chunked") {
-            return Body::Chunked {
+            return Ok(Body::Chunked {
                 conn,
                 remaining: 0,
                 done: false,
-            };
+            });
         }
     }
-    if let Some(len) = get("content-length").and_then(|v| v.parse::<u64>().ok()) {
-        return Body::Fixed {
+    Ok(match content_length(headers)? {
+        Some(len) => Body::Fixed {
             conn,
             remaining: len,
-        };
+        },
+        None => Body::UntilClose { conn },
+    })
+}
+
+/// The response's `Content-Length`, if any. Repeated headers (or a comma
+/// list) must agree (RFC 9110 section 8.6); a malformed or conflicting
+/// length leaves the body's end ambiguous, which RFC 9112 section 6.3 makes
+/// an unrecoverable error rather than something to guess at.
+fn content_length(headers: &[(String, String)]) -> Result<Option<u64>, String> {
+    let mut length = None;
+    for (_, value) in headers.iter().filter(|(k, _)| k == "content-length") {
+        for part in value.split(',').map(str::trim) {
+            let n = match part.parse::<u64>() {
+                // Digits only: parse() alone also takes a leading '+'.
+                Ok(n) if is_all(part, |b| b.is_ascii_digit()) => n,
+                _ => return Err(format!("invalid Content-Length: {value}")),
+            };
+            if length.is_some_and(|l| l != n) {
+                return Err("conflicting Content-Length headers".to_string());
+            }
+            length = Some(n);
+        }
     }
-    Body::UntilClose { conn }
+    Ok(length)
+}
+
+/// Whether `s` is non-empty and every byte satisfies `pred`.
+fn is_all(s: &str, pred: impl Fn(u8) -> bool) -> bool {
+    !s.is_empty() && s.bytes().all(pred)
 }
 
 fn parse_status(line: &str) -> Result<u16, String> {
@@ -819,6 +856,38 @@ mod tests {
         let err = result.err().expect("a trickling head must time out");
         assert!(err.contains("took too long"), "{err}");
         assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn rejects_malformed_chunk_framing() {
+        // Chunk data not followed by CRLF, and a signed chunk size: both
+        // used to be accepted, silently mis-framing the body.
+        for response in [
+            &b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhelloXY0\r\n\r\n"[..],
+            &b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n+5\r\nhello\r\n0\r\n\r\n"[..],
+        ] {
+            let mut response = get(&format!("{}/track", serve_once(response)), &[]).unwrap();
+            let mut body = Vec::new();
+            let err = response.read_to_end(&mut body).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        }
+    }
+
+    #[test]
+    fn rejects_conflicting_content_length() {
+        let base =
+            serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nContent-Length: 5\r\n\r\nhello");
+        assert!(get(&format!("{base}/track"), &[]).is_err());
+        let base = serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: +5\r\n\r\nhello");
+        assert!(get(&format!("{base}/track"), &[]).is_err());
+        // Repeats that agree are fine.
+        let base = serve_once(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 5, 5\r\n\r\nhello",
+        );
+        let mut response = get(&format!("{base}/track"), &[]).unwrap();
+        let mut body = Vec::new();
+        response.read_to_end(&mut body).unwrap();
+        assert_eq!(body, b"hello");
     }
 
     #[test]
