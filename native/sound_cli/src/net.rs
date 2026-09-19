@@ -9,7 +9,7 @@
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
@@ -132,7 +132,7 @@ impl Read for Body {
                 }
                 if *remaining == 0 {
                     // Start of a new chunk: read its size line.
-                    let size_line = read_line(conn)?;
+                    let size_line = read_line(conn, None)?;
                     let size_str = size_line.split(';').next().unwrap_or("").trim();
                     let size = u64::from_str_radix(size_str, 16).map_err(|_| {
                         io::Error::new(io::ErrorKind::InvalidData, "bad chunk size")
@@ -141,7 +141,7 @@ impl Read for Body {
                         // Terminal chunk: consume the trailing CRLF (and any
                         // trailer headers, which this client ignores) up to
                         // the empty line that ends the response.
-                        read_header_lines(conn)?;
+                        read_header_lines(conn, None)?;
                         *done = true;
                         return Ok(0);
                     }
@@ -178,9 +178,18 @@ const MAX_INTERIM_RESPONSES: usize = 8;
 /// Reads one CRLF-terminated line (without the CRLF) from a buffered reader.
 /// Bytes that are not UTF-8 (servers do send Latin-1 header values, e.g.
 /// Icecast's `icy-name`) are replaced rather than failing the response.
-fn read_line<R: BufRead>(r: &mut R) -> io::Result<String> {
+///
+/// Past `deadline`, fails with [io::ErrorKind::TimedOut] even if bytes are
+/// still trickling in (each of which would reset a plain socket timeout).
+fn read_line<R: BufRead>(r: &mut R, deadline: Option<Instant>) -> io::Result<String> {
     let mut line = Vec::new();
     loop {
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "response headers took too long",
+            ));
+        }
         let mut byte = [0u8; 1];
         let n = r.read(&mut byte)?;
         if n == 0 {
@@ -213,10 +222,13 @@ fn read_line<R: BufRead>(r: &mut R) -> io::Result<String> {
 /// headers, or a chunked body's trailers), returning lowercased names and
 /// trimmed values. Every line counts against [MAX_HEADER_LINES], malformed
 /// (colon-less) ones included, so a server cannot stream lines forever.
-fn read_header_lines<R: BufRead>(r: &mut R) -> io::Result<Vec<(String, String)>> {
+fn read_header_lines<R: BufRead>(
+    r: &mut R,
+    deadline: Option<Instant>,
+) -> io::Result<Vec<(String, String)>> {
     let mut headers = Vec::new();
     for _ in 0..=MAX_HEADER_LINES {
-        let line = read_line(r)?;
+        let line = read_line(r, deadline)?;
         if line.is_empty() {
             return Ok(headers);
         }
@@ -253,13 +265,18 @@ const MAX_REDIRECTS: usize = 5;
 /// plain-HTTP connection.
 ///
 /// `url` must be `http://` or `https://`. A connect/read timeout of 15s
-/// applies to each underlying socket operation.
+/// applies to each underlying socket operation, and each response's status
+/// line and headers must arrive within [HEAD_TIMEOUT] of sending the request.
 pub fn get(url: &str, headers: &[(String, String)]) -> Result<Response, String> {
     let mut current = url.to_string();
     let mut send_headers = true;
     // The original request plus one per followed redirect.
     for _ in 0..=MAX_REDIRECTS {
-        let response = get_once(&current, if send_headers { headers } else { &[] })?;
+        let response = get_once(
+            &current,
+            if send_headers { headers } else { &[] },
+            HEAD_TIMEOUT,
+        )?;
         if (300..400).contains(&response.status) {
             if let Some(location) = response.header("location") {
                 let next = resolve_redirect(&current, location)?;
@@ -434,6 +451,10 @@ fn parse_url(url: &str) -> Result<ParsedUrl, String> {
 }
 
 const IO_TIMEOUT: Duration = Duration::from_secs(15);
+/// Overall budget for a response's head. [IO_TIMEOUT] alone never fires
+/// against a server that trickles header bytes slowly enough, which would
+/// keep a fetch thread (and its voice, still connecting) alive indefinitely.
+const HEAD_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn connect(host: &str, port: u16) -> Result<TcpStream, String> {
     // connect_timeout needs resolved addresses. (DNS resolution itself has no
@@ -451,7 +472,11 @@ fn connect(host: &str, port: u16) -> Result<TcpStream, String> {
     Err(last_err)
 }
 
-fn get_once(url: &str, headers: &[(String, String)]) -> Result<Response, String> {
+fn get_once(
+    url: &str,
+    headers: &[(String, String)],
+    head_timeout: Duration,
+) -> Result<Response, String> {
     let parsed = parse_url(url)?;
     // Refuse header names/values that could inject request lines.
     for (name, value) in headers {
@@ -500,15 +525,18 @@ fn get_once(url: &str, headers: &[(String, String)]) -> Result<Response, String>
     conn.write_all(request.as_bytes())
         .map_err(|e| format!("write request: {e}"))?;
     conn.flush().map_err(|e| format!("flush request: {e}"))?;
+    let deadline = Some(Instant::now() + head_timeout);
 
     // Interim 1xx responses (100 Continue, 103 Early Hints) may precede the
     // real one and have no body: skip them. 101 Switching Protocols is final
     // (and never asked for here), so it is returned like any other status.
     let mut interim = 0;
     let (status, response_headers) = loop {
-        let status_line = read_line(&mut conn).map_err(|e| format!("read status line: {e}"))?;
+        let status_line =
+            read_line(&mut conn, deadline).map_err(|e| format!("read status line: {e}"))?;
         let status = parse_status(&status_line)?;
-        let headers = read_header_lines(&mut conn).map_err(|e| format!("read headers: {e}"))?;
+        let headers =
+            read_header_lines(&mut conn, deadline).map_err(|e| format!("read headers: {e}"))?;
         if !(100..200).contains(&status) || status == 101 {
             break (status, headers);
         }
@@ -761,6 +789,36 @@ mod tests {
 
         let endless = b"HTTP/1.1 103 Early Hints\r\n\r\n".repeat(MAX_INTERIM_RESPONSES + 1);
         assert!(get(&format!("{}/track", serve_once(endless)), &[]).is_err());
+    }
+
+    #[test]
+    fn times_out_a_response_head_that_trickles_in() {
+        // One header line every 20ms keeps each socket read well inside
+        // IO_TIMEOUT, and stays under MAX_HEADER_LINES for 2s; only the
+        // overall head deadline stops it.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut discard = [0u8; 4096];
+            let _ = stream.read(&mut discard);
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\n");
+            for _ in 0..100 {
+                if stream.write_all(b"X-Slow: 1\r\n").is_err() {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+        });
+        let start = Instant::now();
+        let result = get_once(
+            &format!("http://{addr}/track"),
+            &[],
+            Duration::from_millis(200),
+        );
+        let err = result.err().expect("a trickling head must time out");
+        assert!(err.contains("took too long"), "{err}");
+        assert!(start.elapsed() < Duration::from_secs(1));
     }
 
     #[test]
