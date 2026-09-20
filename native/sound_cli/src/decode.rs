@@ -2,7 +2,9 @@
 //! what the platform playback paths consume. Supports WAV, MP3, OGG/Vorbis and
 //! FLAC with no system dependencies.
 
+use std::any::Any;
 use std::io::Cursor;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -95,12 +97,25 @@ pub struct StreamDecoder {
     /// Set once the stream has ended early (see [Self::next_chunk]), so later
     /// calls keep reporting the end instead of resuming.
     ended: bool,
+    /// Set once a panic inside symphonia has been caught; the reader and
+    /// decoder state is unknown after that, so later calls fail instead.
+    poisoned: bool,
     pub channels: u32,
     pub rate: u32,
 }
 
 impl StreamDecoder {
+    /// Probes `mss` and builds a decoder for its first decodable track. Like
+    /// [Self::next_chunk], turns a panic inside symphonia into an error.
     fn open(mss: MediaSourceStream, format_hint: Option<&str>) -> Result<StreamDecoder, String> {
+        catch_unwind(AssertUnwindSafe(|| Self::open_unguarded(mss, format_hint)))
+            .unwrap_or_else(|panic| Err(panic_error(panic)))
+    }
+
+    fn open_unguarded(
+        mss: MediaSourceStream,
+        format_hint: Option<&str>,
+    ) -> Result<StreamDecoder, String> {
         let mut hint = Hint::new();
         if let Some(ext) = format_hint {
             hint.with_extension(ext);
@@ -127,6 +142,7 @@ impl StreamDecoder {
             track_id,
             sample_buf: None,
             ended: false,
+            poisoned: false,
             channels: 0,
             rate: 0,
         })
@@ -141,7 +157,24 @@ impl StreamDecoder {
     /// as long as they keep the first one's channel count and sample rate,
     /// which callers fix at the first chunk; the stream ends at the first
     /// link that changes either.
+    ///
+    /// symphonia asserts on some malformed input. Such a panic comes back as
+    /// an error rather than unwinding into the caller (across the C ABI that
+    /// would abort the host process), and the decoder is unusable after it.
     pub fn next_chunk(&mut self) -> Result<Option<Vec<i16>>, String> {
+        if self.poisoned {
+            return Err("decoder unusable after an earlier panic".to_string());
+        }
+        match catch_unwind(AssertUnwindSafe(|| self.next_chunk_unguarded())) {
+            Ok(result) => result,
+            Err(panic) => {
+                self.poisoned = true;
+                Err(panic_error(panic))
+            }
+        }
+    }
+
+    fn next_chunk_unguarded(&mut self) -> Result<Option<Vec<i16>>, String> {
         if self.ended {
             return Ok(None);
         }
@@ -205,6 +238,16 @@ impl StreamDecoder {
             }
         }
     }
+}
+
+/// Describes a panic caught from symphonia as a decode error.
+fn panic_error(panic: Box<dyn Any + Send>) -> String {
+    let cause = panic
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("unknown cause");
+    format!("decoder panicked on malformed input: {cause}")
 }
 
 /// Picks the first track symphonia can decode and builds its decoder.
@@ -498,6 +541,24 @@ mod tests {
         assert_eq!((samples, decoder.rate), (4096 * 2, 44_100));
         // The end sticks rather than resuming with the 48 kHz link.
         assert!(decoder.next_chunk().unwrap().is_none());
+    }
+
+    #[test]
+    fn contains_a_decoder_panic_on_malformed_input() {
+        // STREAMINFO claims 16-sample blocks, but the frames hold 4096. The
+        // FLAC decoder sizes its buffer from STREAMINFO and symphonia then
+        // asserts ("capacity will be exceeded"); through the C ABI that
+        // panic used to abort the whole host process.
+        let (mut streaminfo, frames) = flac_parts(&sine(4096 * 2), 1, 44_100, 4096);
+        streaminfo[0..4].copy_from_slice(&[0, 16, 0, 16]); // min/max block size
+        let ogg = ogg_flac(&streaminfo, &frames, 4096, 0x1234);
+        assert!(decode_bytes(&ogg, None).is_err());
+
+        let mut decoder = open_bytes(ogg);
+        let err = decoder.next_chunk().expect_err("decoding must fail");
+        assert!(err.contains("panicked"), "{err}");
+        // Its state is unknown after the panic, so it refuses to carry on.
+        assert!(decoder.next_chunk().is_err());
     }
 
     #[test]
