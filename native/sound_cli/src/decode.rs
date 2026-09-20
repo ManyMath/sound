@@ -7,7 +7,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{Decoder, DecoderOptions};
+use symphonia::core::codecs::{Decoder, DecoderOptions, CODEC_TYPE_NULL};
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::{FormatOptions, FormatReader};
 use symphonia::core::io::MediaSourceStream;
@@ -112,16 +112,7 @@ impl StreamDecoder {
             .map_err(|e| format!("unsupported or invalid audio: {e}"))?;
 
         let format = probed.format;
-        let track_id = format
-            .default_track()
-            .ok_or_else(|| "no audio track found".to_string())?
-            .id;
-        let decoder = {
-            let track = format.default_track().unwrap();
-            symphonia::default::get_codecs()
-                .make(&track.codec_params, &DecoderOptions::default())
-                .map_err(|e| format!("no decoder for track: {e}"))?
-        };
+        let (track_id, decoder) = make_decoder(format.as_ref())?;
 
         Ok(StreamDecoder {
             format,
@@ -179,6 +170,27 @@ impl StreamDecoder {
             }
         }
     }
+}
+
+/// Picks the first track symphonia can decode and builds its decoder.
+///
+/// Not `default_track()`: that is just the first track, and Ogg orders its
+/// tracks by stream serial number, so it can be a stream symphonia does not
+/// recognize at all (e.g. an Ogg Skeleton index), with no codec.
+fn make_decoder(format: &dyn FormatReader) -> Result<(u32, Box<dyn Decoder>), String> {
+    let mut error = "no audio track found".to_string();
+    for track in format
+        .tracks()
+        .iter()
+        .filter(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+    {
+        match symphonia::default::get_codecs().make(&track.codec_params, &DecoderOptions::default())
+        {
+            Ok(decoder) => return Ok((track.id, decoder)),
+            Err(e) => error = format!("no decoder for track: {e}"),
+        }
+    }
+    Err(error)
 }
 
 #[cfg(test)]
@@ -284,6 +296,108 @@ mod tests {
         let mut sink = ByteSink::new();
         stream.write(&mut sink).expect("flac write");
         sink.as_slice().to_vec()
+    }
+
+    /// Encodes 16-bit samples to FLAC in `block`-frame blocks, returning the
+    /// STREAMINFO block's body and each encoded frame separately, for
+    /// wrapping in an Ogg container with [ogg_flac].
+    fn flac_parts(
+        samples: &[i32],
+        channels: usize,
+        rate: usize,
+        block: usize,
+    ) -> (Vec<u8>, Vec<Vec<u8>>) {
+        use flacenc::bitsink::ByteSink;
+        use flacenc::component::BitRepr;
+        use flacenc::error::Verify;
+        let mut config = flacenc::config::Encoder::default();
+        config.block_size = block;
+        let config = config.into_verified().expect("flac config");
+        let source = flacenc::source::MemSource::from_samples(samples, channels, 16, rate);
+        let stream =
+            flacenc::encode_with_fixed_block_size(&config, source, block).expect("flac encode");
+        let mut sink = ByteSink::new();
+        stream.write(&mut sink).expect("flac write");
+        // "fLaC", then STREAMINFO's 4-byte block header and 34-byte body.
+        let streaminfo = sink.as_slice()[8..8 + 34].to_vec();
+        let frames = (0..stream.frame_count())
+            .map(|i| {
+                let mut sink = ByteSink::new();
+                stream
+                    .frame(i)
+                    .unwrap()
+                    .write(&mut sink)
+                    .expect("flac write");
+                sink.as_slice().to_vec()
+            })
+            .collect();
+        (streaminfo, frames)
+    }
+
+    /// One Ogg page carrying exactly one whole `packet`.
+    fn ogg_page(header_type: u8, granule: u64, serial: u32, seq: u32, packet: &[u8]) -> Vec<u8> {
+        let mut lacing = vec![255u8; packet.len() / 255];
+        lacing.push((packet.len() % 255) as u8);
+        let mut page = b"OggS\0".to_vec();
+        page.push(header_type);
+        page.extend_from_slice(&granule.to_le_bytes());
+        page.extend_from_slice(&serial.to_le_bytes());
+        page.extend_from_slice(&seq.to_le_bytes());
+        page.extend_from_slice(&[0; 4]); // CRC, filled in below
+        page.push(lacing.len() as u8);
+        page.extend_from_slice(&lacing);
+        page.extend_from_slice(packet);
+        // Ogg's CRC-32: polynomial 0x04C11DB7, unreflected, no final XOR.
+        let mut crc = 0u32;
+        for &b in &page {
+            crc ^= (b as u32) << 24;
+            for _ in 0..8 {
+                crc = if crc & 0x8000_0000 != 0 {
+                    (crc << 1) ^ 0x04C1_1DB7
+                } else {
+                    crc << 1
+                };
+            }
+        }
+        page[22..26].copy_from_slice(&crc.to_le_bytes());
+        page
+    }
+
+    /// Wraps FLAC `frames` (each `block` samples long) as one Ogg FLAC
+    /// logical stream with the given `serial`, one frame per page.
+    fn ogg_flac(streaminfo: &[u8], frames: &[Vec<u8>], block: u64, serial: u32) -> Vec<u8> {
+        // Ogg FLAC mapping v1.0 identification packet, then the STREAMINFO
+        // block (flagged as the last metadata block).
+        let mut id = b"\x7fFLAC\x01\x00\x00\x00fLaC\x80\x00\x00\x22".to_vec();
+        id.extend_from_slice(streaminfo);
+        let mut ogg = ogg_page(0x02, 0, serial, 0, &id);
+        for (i, frame) in frames.iter().enumerate() {
+            let eos = if i + 1 == frames.len() { 0x04 } else { 0 };
+            let granule = block * (i as u64 + 1);
+            ogg.extend_from_slice(&ogg_page(eos, granule, serial, i as u32 + 1, frame));
+        }
+        ogg
+    }
+
+    fn sine(len: usize) -> Vec<i32> {
+        (0..len)
+            .map(|i| ((i as f32 * 0.05).sin() * 8000.0) as i32)
+            .collect()
+    }
+
+    #[test]
+    fn skips_unrecognized_tracks_when_picking_one_to_decode() {
+        // An unknown logical stream (here a fake Ogg Skeleton header) with
+        // a lower serial than the audio sorts first among the tracks, and
+        // used to be picked as the default track, which has no decoder.
+        let (streaminfo, frames) = flac_parts(&sine(4096 * 2), 1, 44_100, 4096);
+        let mut skeleton = b"fishead\0".to_vec();
+        skeleton.resize(64, 0);
+        let mut ogg = ogg_page(0x02, 0, 1, 0, &skeleton);
+        ogg.extend_from_slice(&ogg_flac(&streaminfo, &frames, 4096, 0x1234));
+        let audio = decode_bytes(&ogg, None).unwrap();
+        assert_eq!(audio.rate, 44_100);
+        assert_eq!(audio.samples.len(), 4096 * 2);
     }
 
     #[test]
