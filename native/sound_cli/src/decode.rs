@@ -92,6 +92,9 @@ pub struct StreamDecoder {
     decoder: Box<dyn Decoder>,
     track_id: u32,
     sample_buf: Option<SampleBuffer<i16>>,
+    /// Set once the stream has ended early (see [Self::next_chunk]), so later
+    /// calls keep reporting the end instead of resuming.
+    ended: bool,
     pub channels: u32,
     pub rate: u32,
 }
@@ -123,6 +126,7 @@ impl StreamDecoder {
             decoder,
             track_id,
             sample_buf: None,
+            ended: false,
             channels: 0,
             rate: 0,
         })
@@ -132,7 +136,15 @@ impl StreamDecoder {
     /// `None` at a clean end of stream. Skips packets for other tracks and
     /// packets that fail to decode (up to [MAX_CONSECUTIVE_BAD_PACKETS] in a
     /// row), only failing on a genuine I/O or format error.
+    ///
+    /// Chained streams (consecutive Ogg links) are decoded one after another
+    /// as long as they keep the first one's channel count and sample rate,
+    /// which callers fix at the first chunk; the stream ends at the first
+    /// link that changes either.
     pub fn next_chunk(&mut self) -> Result<Option<Vec<i16>>, String> {
+        if self.ended {
+            return Ok(None);
+        }
         let mut bad_packets = 0;
         loop {
             let packet = match self.format.next_packet() {
@@ -147,6 +159,14 @@ impl StreamDecoder {
                     return Ok(None)
                 }
                 Err(SymphoniaError::IoError(e)) => return Err(format!("read error: {e}")),
+                // The reader moved on to a new stream with its own tracks (a
+                // chained Ogg link): decode it with a fresh decoder, and a
+                // fresh sample buffer sized for that decoder's packets.
+                Err(SymphoniaError::ResetRequired) => {
+                    (self.track_id, self.decoder) = make_decoder(self.format.as_ref())?;
+                    self.sample_buf = None;
+                    continue;
+                }
                 Err(e) => return Err(format!("read error: {e}")),
             };
             if packet.track_id() != self.track_id {
@@ -155,7 +175,13 @@ impl StreamDecoder {
             match self.decoder.decode(&packet) {
                 Ok(decoded) => {
                     let spec = *decoded.spec();
-                    self.channels = spec.channels.count() as u32;
+                    let channels = spec.channels.count() as u32;
+                    if self.rate != 0 && (channels != self.channels || spec.rate != self.rate) {
+                        // A chained link in another format; see above.
+                        self.ended = true;
+                        return Ok(None);
+                    }
+                    self.channels = channels;
                     self.rate = spec.rate;
                     let buf = self
                         .sample_buf
@@ -439,6 +465,39 @@ mod tests {
         let ogg = ogg_flac(&streaminfo, &damaged, 4096, 0x1234);
         let err = decode_bytes(&ogg, None).err().expect("should give up");
         assert!(err.contains("in a row"), "{err}");
+    }
+
+    fn open_bytes(bytes: Vec<u8>) -> StreamDecoder {
+        let mss = MediaSourceStream::new(Box::new(Cursor::new(bytes)), Default::default());
+        StreamDecoder::open(mss, None).unwrap()
+    }
+
+    #[test]
+    fn decodes_chained_ogg_streams() {
+        // Two Ogg links back to back. Starting the second made symphonia
+        // return ResetRequired, which used to fail the whole decode.
+        let (streaminfo, frames) = flac_parts(&sine(4096 * 3), 1, 44_100, 4096);
+        let mut ogg = ogg_flac(&streaminfo, &frames[..2], 4096, 0x1234);
+        ogg.extend_from_slice(&ogg_flac(&streaminfo, &frames, 4096, 0x5678));
+        let audio = decode_bytes(&ogg, None).unwrap();
+        assert_eq!(audio.rate, 44_100);
+        assert_eq!(audio.samples.len(), 4096 * 5);
+    }
+
+    #[test]
+    fn ends_a_chained_ogg_stream_at_a_format_change() {
+        let (streaminfo, frames) = flac_parts(&sine(4096 * 2), 1, 44_100, 4096);
+        let (streaminfo_48k, frames_48k) = flac_parts(&sine(4096 * 2), 1, 48_000, 4096);
+        let mut ogg = ogg_flac(&streaminfo, &frames, 4096, 0x1234);
+        ogg.extend_from_slice(&ogg_flac(&streaminfo_48k, &frames_48k, 4096, 0x5678));
+        let mut decoder = open_bytes(ogg);
+        let mut samples = 0;
+        while let Some(chunk) = decoder.next_chunk().unwrap() {
+            samples += chunk.len();
+        }
+        assert_eq!((samples, decoder.rate), (4096 * 2, 44_100));
+        // The end sticks rather than resuming with the 48 kHz link.
+        assert!(decoder.next_chunk().unwrap().is_none());
     }
 
     #[test]
