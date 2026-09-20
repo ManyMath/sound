@@ -228,10 +228,18 @@ impl WinMMPlayback {
         })
     }
 
-    fn wait_for_hdr(hdr: &WaveHdr) -> Result<(), String> {
+    /// Reads a header's flags straight from memory. The driver sets
+    /// `WHDR_DONE` from its own thread, so this must not go through a
+    /// `&WaveHdr`, which lets the compiler assume the value never changes and
+    /// hoist the load out of a polling loop.
+    fn hdr_flags(hdr: *const WaveHdr) -> u32 {
+        unsafe { std::ptr::addr_of!((*hdr).flags).read_volatile() }
+    }
+
+    fn wait_for_hdr(hdr: *const WaveHdr) -> Result<(), String> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
         loop {
-            let flags = hdr.flags;
+            let flags = Self::hdr_flags(hdr);
             if flags & WHDR_PREPARED == 0 || flags & WHDR_DONE != 0 {
                 return Ok(());
             }
@@ -252,13 +260,16 @@ impl PcmSink for WinMMPlayback {
         let ring = unsafe { &mut *self.ring.get() };
         for chunk in bytes.chunks(buf_bytes) {
             let idx = ring.next % NUM_BUFFERS;
-            Self::wait_for_hdr(&ring.hdrs[idx])?;
+            // Only touch headers through raw pointers: the device may still be
+            // writing to this one until wait_for_hdr sees WHDR_DONE.
+            let hdr = unsafe { ring.hdrs.as_mut_ptr().add(idx) };
+            Self::wait_for_hdr(hdr)?;
 
-            if ring.hdrs[idx].flags & WHDR_PREPARED != 0 {
+            if Self::hdr_flags(hdr) & WHDR_PREPARED != 0 {
                 unsafe {
                     (self.wmm.wave_out_unprepare_header)(
                         self.handle,
-                        &mut ring.hdrs[idx],
+                        hdr,
                         std::mem::size_of::<WaveHdr>() as u32,
                     );
                 }
@@ -266,14 +277,16 @@ impl PcmSink for WinMMPlayback {
 
             let len = chunk.len().min(ring.datas[idx].len());
             ring.datas[idx][..len].copy_from_slice(&chunk[..len]);
-            ring.hdrs[idx].data = ring.datas[idx].as_ptr() as *mut u8;
-            ring.hdrs[idx].buffer_length = len as u32;
-            ring.hdrs[idx].flags = 0;
+            unsafe {
+                (*hdr).data = ring.datas[idx].as_ptr() as *mut u8;
+                (*hdr).buffer_length = len as u32;
+                (*hdr).flags = 0;
+            }
 
             unsafe {
                 let rc = (self.wmm.wave_out_prepare_header)(
                     self.handle,
-                    &mut ring.hdrs[idx],
+                    hdr,
                     std::mem::size_of::<WaveHdr>() as u32,
                 );
                 if rc != MMSYSERR_NOERROR {
@@ -281,7 +294,7 @@ impl PcmSink for WinMMPlayback {
                 }
                 let rc = (self.wmm.wave_out_write)(
                     self.handle,
-                    &mut ring.hdrs[idx],
+                    hdr,
                     std::mem::size_of::<WaveHdr>() as u32,
                 );
                 if rc != MMSYSERR_NOERROR {
@@ -295,8 +308,8 @@ impl PcmSink for WinMMPlayback {
 
     fn drain(&self) {
         let ring = unsafe { &*self.ring.get() };
-        for hdr in &ring.hdrs {
-            let _ = Self::wait_for_hdr(hdr);
+        for idx in 0..ring.hdrs.len() {
+            let _ = Self::wait_for_hdr(unsafe { ring.hdrs.as_ptr().add(idx) });
         }
     }
 }
