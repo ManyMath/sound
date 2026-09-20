@@ -76,6 +76,10 @@ pub fn open_url_decoder(
     StreamDecoder::open(mss, format_hint)
 }
 
+/// How many packets in a row may fail to decode before the stream is taken to
+/// be undecodable, rather than just damaged in places.
+const MAX_CONSECUTIVE_BAD_PACKETS: u32 = 1000;
+
 /// Decodes one packet at a time from a [MediaSourceStream], so a caller can
 /// start consuming audio before the whole source has been read (relevant
 /// when the source is still downloading, as with [StreamingSource]).
@@ -126,10 +130,10 @@ impl StreamDecoder {
 
     /// Decodes and returns the next chunk of interleaved S16LE samples, or
     /// `None` at a clean end of stream. Skips packets for other tracks and
-    /// tolerates individual packet decode errors (matching the previous
-    /// buffered decoder's behavior), only failing on a genuine I/O or format
-    /// error.
+    /// packets that fail to decode (up to [MAX_CONSECUTIVE_BAD_PACKETS] in a
+    /// row), only failing on a genuine I/O or format error.
     pub fn next_chunk(&mut self) -> Result<Option<Vec<i16>>, String> {
+        let mut bad_packets = 0;
         loop {
             let packet = match self.format.next_packet() {
                 Ok(p) => p,
@@ -159,14 +163,19 @@ impl StreamDecoder {
                     buf.copy_interleaved_ref(decoded);
                     return Ok(Some(buf.samples().to_vec()));
                 }
-                Err(SymphoniaError::DecodeError(_)) => continue,
-                Err(SymphoniaError::IoError(e))
-                    if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-                {
-                    return Ok(None)
+                // decode() only reads the packet already in memory, so every
+                // error here means that one packet is malformed -- including
+                // an IoError, which is how symphonia reports a packet shorter
+                // than its own contents claim. It never means the stream
+                // ended, so skip the packet rather than stopping or failing.
+                Err(e) => {
+                    bad_packets += 1;
+                    if bad_packets >= MAX_CONSECUTIVE_BAD_PACKETS {
+                        return Err(format!(
+                            "decode error: {e} ({bad_packets} packets in a row failed)"
+                        ));
+                    }
                 }
-                Err(SymphoniaError::IoError(e)) => return Err(format!("decode error: {e}")),
-                Err(e) => return Err(format!("decode error: {e}")),
             }
         }
     }
@@ -398,6 +407,38 @@ mod tests {
         let audio = decode_bytes(&ogg, None).unwrap();
         assert_eq!(audio.rate, 44_100);
         assert_eq!(audio.samples.len(), 4096 * 2);
+    }
+
+    #[test]
+    fn skips_a_malformed_packet_mid_stream() {
+        // A packet cut short reports an IoError from decode(): a few bytes
+        // in, symphonia's UnexpectedEof "buffer underrun" used to end the
+        // stream there silently; further in, "unexpected end of bitstream"
+        // used to fail the whole decode.
+        let (streaminfo, frames) = flac_parts(&sine(4096 * 6), 1, 44_100, 4096);
+        for cut in [3, frames[1].len() / 2] {
+            let mut damaged = frames.clone();
+            damaged[1].truncate(cut);
+            let ogg = ogg_flac(&streaminfo, &damaged, 4096, 0x1234);
+            let audio = decode_bytes(&ogg, None).unwrap();
+            assert_eq!(audio.samples.len(), 4096 * 5, "cut to {cut} bytes");
+        }
+    }
+
+    #[test]
+    fn gives_up_after_too_many_bad_packets_in_a_row() {
+        let (streaminfo, frames) = flac_parts(&sine(4096 * 2), 1, 44_100, 4096);
+        let mut bad = frames[1].clone();
+        bad.truncate(3);
+        let mut damaged = vec![frames[0].clone()];
+        damaged.extend(std::iter::repeat_n(
+            bad,
+            MAX_CONSECUTIVE_BAD_PACKETS as usize,
+        ));
+        damaged.push(frames[1].clone());
+        let ogg = ogg_flac(&streaminfo, &damaged, 4096, 0x1234);
+        let err = decode_bytes(&ogg, None).err().expect("should give up");
+        assert!(err.contains("in a row"), "{err}");
     }
 
     #[test]
