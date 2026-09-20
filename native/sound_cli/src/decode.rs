@@ -279,6 +279,7 @@ mod tests {
     use super::*;
     use hound::{SampleFormat, WavSpec, WavWriter};
     use std::io::Cursor;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Writes a `frames`-long WAV (one interleaved value per sample) with the
     /// given spec, filling every sample with `value` (int) for easy assertions.
@@ -590,14 +591,18 @@ mod tests {
     }
 
     /// Serves `body` slowly (in small delayed writes) over plain HTTP,
-    /// returning the URL. Exercises the full `net` -> `StreamingSource` ->
+    /// returning the URL and a count of the body bytes sent so far (each
+    /// write counted before it starts, so the client can't be ahead of it).
+    /// Exercises the full `net` -> `StreamingSource` ->
     /// `StreamDecoder` chain end-to-end against a real (if synthetic)
     /// encoded track, the same way [sound_play_url] does.
-    fn serve_slowly(body: Vec<u8>) -> String {
+    fn serve_slowly(body: Vec<u8>) -> (String, Arc<AtomicUsize>) {
         use std::io::Write;
         use std::net::TcpListener;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
+        let sent = Arc::new(AtomicUsize::new(0));
+        let sent_count = sent.clone();
         std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let mut discard = [0u8; 4096];
@@ -608,18 +613,25 @@ mod tests {
                 )
                 .unwrap();
             for chunk in body.chunks(512) {
-                stream.write_all(chunk).unwrap();
-                stream.flush().unwrap();
+                sent_count.fetch_add(chunk.len(), Ordering::SeqCst);
+                // The client may hang up early once it has what it needs.
+                if stream
+                    .write_all(chunk)
+                    .and_then(|_| stream.flush())
+                    .is_err()
+                {
+                    return;
+                }
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }
         });
-        format!("http://{addr}/track.wav")
+        (format!("http://{addr}/track"), sent)
     }
 
     #[test]
     fn decodes_wav_streamed_over_http_incrementally() {
         let wav = const_wav(2, 44_100, 16, SampleFormat::Int, 4_000, 777);
-        let url = serve_slowly(wav);
+        let (url, _) = serve_slowly(wav);
 
         let mut decoder = open_url_decoder(
             url,
@@ -672,6 +684,84 @@ mod tests {
         .err()
         .expect("a 404 must not open");
         assert!(err.contains("404"), "{err}");
+    }
+
+    /// `frames` MPEG-1 Layer III frames of digital silence (mono, 44.1 kHz,
+    /// 128 kbps, no CRC): a header, all-zero side info, zero main data.
+    fn silent_mp3(frames: usize) -> Vec<u8> {
+        let mut frame = vec![0u8; 417]; // 144 * 128000 / 44100, unpadded
+        frame[..4].copy_from_slice(&[0xFF, 0xFB, 0x90, 0xC0]);
+        frame.repeat(frames)
+    }
+
+    /// Pseudo-random 16-bit noise, which FLAC barely compresses.
+    fn noise(len: usize) -> Vec<i32> {
+        let mut x = 1u32;
+        (0..len)
+            .map(|_| {
+                x = x.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                ((x >> 16) as i16 / 4) as i32
+            })
+            .collect()
+    }
+
+    #[test]
+    fn probes_every_format_from_a_streamed_source() {
+        // The streaming source is not seekable; each supported container
+        // must still probe and decode from it, with no format hint.
+        let (streaminfo, frames) = flac_parts(&sine(4096 * 2), 1, 48_000, 4096);
+        for (name, body, rate, samples) in [
+            (
+                "wav",
+                const_wav(1, 22_050, 16, SampleFormat::Int, 1_000, 5),
+                22_050,
+                1_000,
+            ),
+            (
+                "flac",
+                encode_flac(&sine(4096 * 2), 1, 44_100),
+                44_100,
+                8_192,
+            ),
+            (
+                "ogg",
+                ogg_flac(&streaminfo, &frames, 4096, 0x1234),
+                48_000,
+                8_192,
+            ),
+            ("mp3", silent_mp3(20), 44_100, 20 * 1152),
+        ] {
+            let (url, _) = serve_slowly(body);
+            let mut decoder =
+                open_url_decoder(url, Vec::new(), None, Arc::new(AtomicBool::new(false)))
+                    .unwrap_or_else(|e| panic!("{name}: {e}"));
+            let mut decoded = 0;
+            while let Some(chunk) = decoder.next_chunk().unwrap() {
+                decoded += chunk.len();
+            }
+            assert_eq!((decoder.rate, decoded), (rate, samples), "{name}");
+        }
+    }
+
+    #[test]
+    fn starts_decoding_a_streamed_ogg_before_the_download_finishes() {
+        // The source used to claim to be seekable, so opening an Ogg stream
+        // with a known Content-Length made symphonia seek to near its end
+        // (to measure its duration), which blocked until the whole body had
+        // downloaded.
+        let (streaminfo, frames) = flac_parts(&noise(4096 * 24), 1, 44_100, 4096);
+        let ogg = ogg_flac(&streaminfo, &frames, 4096, 0x1234);
+        let len = ogg.len();
+        assert!(len > 128 * 1024);
+        let (url, sent) = serve_slowly(ogg);
+        let mut decoder =
+            open_url_decoder(url, Vec::new(), None, Arc::new(AtomicBool::new(false))).unwrap();
+        assert!(decoder.next_chunk().unwrap().is_some());
+        let sent = sent.load(Ordering::SeqCst);
+        assert!(
+            sent < len / 2,
+            "first chunk decoded only after {sent} of {len} bytes were sent"
+        );
     }
 
     #[test]

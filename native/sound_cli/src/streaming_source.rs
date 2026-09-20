@@ -240,8 +240,14 @@ impl Seek for StreamingSource {
 }
 
 impl MediaSource for StreamingSource {
+    /// `false`, although [Seek] works: told the source is seekable, format
+    /// readers may seek ahead while opening (symphonia's Ogg reader goes to
+    /// near the end to measure the stream's duration), and a forward seek
+    /// blocks until those bytes download -- so playback would not start
+    /// before the whole file arrived. Nothing here needs symphonia to seek:
+    /// playback seeks and loops on decoded samples.
     fn is_seekable(&self) -> bool {
-        true
+        false
     }
 
     fn byte_len(&self) -> Option<u64> {
