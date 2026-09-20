@@ -140,6 +140,12 @@ impl StreamingSource {
         cvar.notify_all();
     }
 
+    /// A handle for checking whether the fetch failed once this source has
+    /// been handed to symphonia (which then owns it).
+    pub fn status(&self) -> FetchStatus {
+        FetchStatus(self.shared.clone())
+    }
+
     /// Blocks until at least `upto` bytes are buffered, the fetch is done
     /// (successfully or with an error), or [Self::stop] is set.
     fn wait_until(&self, upto: u64) -> io::Result<()> {
@@ -162,6 +168,18 @@ impl StreamingSource {
             }
         }
         Ok(())
+    }
+}
+
+/// See [StreamingSource::status]. Shares the source's state, buffer included,
+/// so it is meant to be short-lived.
+pub struct FetchStatus(Arc<(Mutex<Shared>, Condvar)>);
+
+impl FetchStatus {
+    /// Why the fetch failed, if it has (so far).
+    pub fn error(&self) -> Option<String> {
+        let (lock, _) = &*self.0;
+        lock.lock().unwrap().error.clone()
     }
 }
 

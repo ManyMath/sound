@@ -74,8 +74,11 @@ pub fn open_url_decoder(
     stop: Arc<AtomicBool>,
 ) -> Result<StreamDecoder, String> {
     let source = StreamingSource::fetch(url, headers, stop);
+    let fetch = source.status();
     let mss = MediaSourceStream::new(Box::new(source), Default::default());
-    StreamDecoder::open(mss, format_hint)
+    // A failed fetch fails the probe too, for a misleading reason (an HTTP
+    // 404 reads as "no suitable format reader found"); report the fetch's.
+    StreamDecoder::open(mss, format_hint).map_err(|e| fetch.error().unwrap_or(e))
 }
 
 /// How many packets in a row may fail to decode before the stream is taken to
@@ -641,6 +644,34 @@ mod tests {
             chunk_count > 1,
             "expected multiple decoded chunks, got {chunk_count}"
         );
+    }
+
+    #[test]
+    fn open_url_decoder_reports_the_fetch_error_over_the_probe_error() {
+        // A 404 means the probe never sees any bytes, so it fails too; its
+        // reason ("no suitable format reader found") used to hide the HTTP
+        // status.
+        use std::io::Write;
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut discard = [0u8; 4096];
+            let _ = std::io::Read::read(&mut stream, &mut discard);
+            stream
+                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nnot found")
+                .unwrap();
+        });
+        let err = open_url_decoder(
+            format!("http://{addr}/missing.mp3"),
+            Vec::new(),
+            None,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .err()
+        .expect("a 404 must not open");
+        assert!(err.contains("404"), "{err}");
     }
 
     #[test]
