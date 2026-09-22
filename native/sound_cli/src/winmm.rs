@@ -107,16 +107,18 @@ impl WinMM {
         }
     }
 
-    /// Finds an output by its WinMM display name. Drivers may truncate names
-    /// to 31 UTF-16 units, so either side being a case-insensitive prefix is
-    /// accepted in addition to an exact match.
+    /// Finds an output by its WinMM display name, case-insensitively. An
+    /// exact match wins. Drivers may truncate names to 31 UTF-16 units, so
+    /// failing that, either side being a prefix of the other is accepted as
+    /// long as it picks out a single device.
     fn find_output_device(&self, wanted: &str) -> Result<u32, String> {
-        let wanted = wanted.trim().to_lowercase();
+        let requested = wanted.trim();
+        let wanted = requested.to_lowercase();
         if wanted.is_empty() {
             return Err("output device name is empty".to_string());
         }
         let count = unsafe { (self.wave_out_get_num_devs)() };
-        let mut available = Vec::new();
+        let mut devices = Vec::new();
         for id in 0..count {
             let mut caps = WaveOutCapsW {
                 mid: 0,
@@ -144,17 +146,39 @@ impl WinMM {
                 .position(|&unit| unit == 0)
                 .unwrap_or(MAXPNAMELEN);
             let name = String::from_utf16_lossy(&caps.pname[..end]);
-            let folded = name.to_lowercase();
-            if folded == wanted || folded.starts_with(&wanted) || wanted.starts_with(&folded) {
-                return Ok(id);
+            if !name.is_empty() {
+                devices.push((id, name));
             }
-            available.push(name);
         }
-        Err(format!(
-            "output device {wanted:?} not found (available: {})",
-            available.join(", ")
-        ))
+        if let Some((id, _)) = devices.iter().find(|(_, n)| n.to_lowercase() == wanted) {
+            return Ok(*id);
+        }
+        let prefixed: Vec<&(u32, String)> = devices
+            .iter()
+            .filter(|(_, n)| {
+                let folded = n.to_lowercase();
+                folded.starts_with(&wanted) || wanted.starts_with(&folded)
+            })
+            .collect();
+        match prefixed.as_slice() {
+            [(id, _)] => Ok(*id),
+            [] => Err(format!(
+                "output device {requested:?} not found (available: {})",
+                join_names(devices.iter())
+            )),
+            _ => Err(format!(
+                "output device {requested:?} is ambiguous (matches: {})",
+                join_names(prefixed.iter().copied())
+            )),
+        }
     }
+}
+
+fn join_names<'a>(devices: impl Iterator<Item = &'a (u32, String)>) -> String {
+    devices
+        .map(|(_, name)| name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 const NUM_BUFFERS: usize = 4;
