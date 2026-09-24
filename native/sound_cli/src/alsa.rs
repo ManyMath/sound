@@ -127,31 +127,44 @@ impl<'a> PcmPlayback<'a> {
 
     /// Writes one interleaved chunk of S16LE samples, recovering from
     /// underruns. Returns the number of frames written, or an error string.
+    ///
+    /// `snd_pcm_writei` can accept only part of the chunk when an underrun or
+    /// a signal interrupts it, so this keeps writing the remainder until the
+    /// whole chunk is in.
     pub fn write(&self, samples: &[i16]) -> Result<usize, String> {
-        let frames = (samples.len() / self.channels as usize) as c_ulong;
-        if frames == 0 {
-            return Ok(0);
-        }
-        unsafe {
-            let mut written =
-                (self.alsa.pcm_writei)(self.pcm, samples.as_ptr() as *const c_void, frames);
-            if written < 0 {
-                // Try to recover from underrun/suspend, then retry once.
-                let rc = (self.alsa.pcm_recover)(self.pcm, written as c_int, 1);
+        let channels = self.channels as usize;
+        let frames = samples.len() / channels;
+        let mut done = 0usize;
+        let mut failures = 0;
+        while done < frames {
+            let rest = &samples[done * channels..frames * channels];
+            let n = unsafe {
+                (self.alsa.pcm_writei)(
+                    self.pcm,
+                    rest.as_ptr() as *const c_void,
+                    (frames - done) as c_ulong,
+                )
+            };
+            if n > 0 {
+                done += n as usize;
+                failures = 0;
+                continue;
+            }
+            failures += 1;
+            if n < 0 {
+                // Try to recover from underrun/suspend, then retry.
+                let rc = unsafe { (self.alsa.pcm_recover)(self.pcm, n as c_int, 1) };
                 if rc < 0 {
                     return Err(format!("snd_pcm_writei: {}", self.alsa.strerror(rc)));
                 }
-                written =
-                    (self.alsa.pcm_writei)(self.pcm, samples.as_ptr() as *const c_void, frames);
-                if written < 0 {
-                    return Err(format!(
-                        "snd_pcm_writei (retry): {}",
-                        self.alsa.strerror(written as c_int)
-                    ));
-                }
             }
-            Ok(written as usize)
+            if failures > 3 {
+                return Err(format!(
+                    "snd_pcm_writei made no progress after {failures} attempts"
+                ));
+            }
         }
+        Ok(done)
     }
 
     /// Blocks until all buffered audio has been played.
