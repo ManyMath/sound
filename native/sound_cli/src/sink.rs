@@ -111,7 +111,7 @@ type FnGetData = unsafe extern "C" fn(
 ) -> OSStatus;
 
 type FnCFStringCreate =
-    unsafe extern "C" fn(*const c_void, *const u8, isize, u32, u8, *const c_void) -> CFStringRef;
+    unsafe extern "C" fn(*const c_void, *const u8, isize, u32, u8) -> CFStringRef;
 type FnCFStringLen = unsafe extern "C" fn(CFStringRef) -> isize;
 type FnCFStringGetCString = unsafe extern "C" fn(CFStringRef, *mut u8, isize, u32) -> u8;
 type FnCFRelease = unsafe extern "C" fn(*const c_void);
@@ -396,7 +396,6 @@ impl Sink {
                 uid.len() as isize,
                 K_CF_ENCODING_UTF8,
                 0,
-                std::ptr::null(),
             );
             if cfuid.is_null() {
                 (libs.dispose)(queue, 1);
