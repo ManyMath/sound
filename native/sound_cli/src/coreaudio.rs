@@ -11,8 +11,9 @@
 
 use std::os::raw::{c_int, c_void};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use libloading::Library;
 
@@ -150,6 +151,13 @@ pub struct CoreAudioPlayback<'a> {
 
 const RING_BUFFERS: u32 = 4;
 const FRAMES_PER_BUFFER: u32 = 2048;
+
+/// How long `write`/`drain` wait for the output callback to make progress
+/// before giving up. The callback normally runs every ~46 ms; it stops
+/// entirely when the queue does (e.g. an iOS audio-session interruption or
+/// the device going away), and blocking forever would leave the voice thread
+/// unjoinable.
+const STALL_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Locks ignoring poisoning: these mutexes guard plain data (no invariants a
 /// panic could break), and the render callback must never panic itself, which
@@ -306,9 +314,23 @@ impl PcmSink for CoreAudioPlayback<'_> {
         let frames_per_send = FRAMES_PER_BUFFER as usize;
         let stride = frames_per_send * self.channels as usize;
         for chunk in samples.chunks(stride) {
-            self.tx
-                .send(chunk.to_vec())
-                .map_err(|e| format!("audio channel closed: {e}"))?;
+            let mut item = chunk.to_vec();
+            let deadline = Instant::now() + STALL_TIMEOUT;
+            loop {
+                match self.tx.try_send(item) {
+                    Ok(()) => break,
+                    Err(TrySendError::Full(back)) => {
+                        if Instant::now() >= deadline {
+                            return Err("audio queue stalled: the output stopped draining".into());
+                        }
+                        item = back;
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(TrySendError::Disconnected(_)) => {
+                        return Err("audio channel closed".into());
+                    }
+                }
+            }
         }
         self.frames_written.fetch_add(
             samples.len() as u64 / self.channels as u64,
@@ -322,12 +344,20 @@ impl PcmSink for CoreAudioPlayback<'_> {
         // means the device has it. Then sleep one full ring's worth of audio
         // so the speaker plays it out before we stop the queue.
         let target_samples = self.frames_written.load(Ordering::Relaxed) * self.channels as u64;
-        for _ in 0..4000 {
+        let mut last = self.channel.samples_drained.load(Ordering::Relaxed);
+        let mut idle = Instant::now();
+        loop {
             let drained = self.channel.samples_drained.load(Ordering::Relaxed);
             if drained >= target_samples {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            if drained != last {
+                last = drained;
+                idle = Instant::now();
+            } else if idle.elapsed() >= STALL_TIMEOUT {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
         }
         let buffered_ms = (RING_BUFFERS * FRAMES_PER_BUFFER) as u64 * 1000 / 44_100;
         std::thread::sleep(std::time::Duration::from_millis(buffered_ms.min(500)));
