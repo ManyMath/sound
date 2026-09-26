@@ -143,7 +143,8 @@ impl PcmSink for AaudioPlayback<'_> {
         unsafe {
             while offset < total_frames {
                 let ptr = samples.as_ptr().add((offset * self.channels) as usize) as *const c_void;
-                // 1 s timeout - blocks until the device buffer has room.
+                // 1 s timeout - blocks until the device buffer has room. On
+                // timeout it returns however much it wrote, possibly nothing.
                 let n = (self.aaudio.stream_write)(
                     self.stream,
                     ptr,
@@ -156,6 +157,9 @@ impl PcmSink for AaudioPlayback<'_> {
                         self.aaudio.result_text(n)
                     ));
                 }
+                if n == 0 {
+                    return Err("AAudioStream_write: the stream stopped accepting audio".into());
+                }
                 offset += n;
             }
         }
@@ -163,11 +167,22 @@ impl PcmSink for AaudioPlayback<'_> {
     }
 
     fn drain(&self) {
-        // Wait until the device has played out everything we wrote, then stop.
+        // Wait until the device has played out everything we wrote, then
+        // stop. Give up early if playback stops advancing (e.g. the device
+        // went away) so the voice thread can still finish.
         unsafe {
             let target = (self.aaudio.stream_frames_written)(self.stream);
+            let mut last = (self.aaudio.stream_frames_read)(self.stream);
+            let mut idle = std::time::Instant::now();
             for _ in 0..2000 {
-                if (self.aaudio.stream_frames_read)(self.stream) >= target {
+                let read = (self.aaudio.stream_frames_read)(self.stream);
+                if read >= target {
+                    break;
+                }
+                if read != last {
+                    last = read;
+                    idle = std::time::Instant::now();
+                } else if idle.elapsed() >= std::time::Duration::from_secs(1) {
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(5));
