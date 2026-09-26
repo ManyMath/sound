@@ -30,7 +30,9 @@ const K_PCM_FLAG_IS_PACKED: u32 = 0x8;
 const K_DEVICES: u32 = u32::from_be_bytes(*b"dev#");
 const K_DEVICE_UID: u32 = u32::from_be_bytes(*b"uid ");
 const K_OBJECT_NAME: u32 = u32::from_be_bytes(*b"lnam");
+const K_DEVICE_STREAMS: u32 = u32::from_be_bytes(*b"stm#");
 const K_SCOPE_GLOBAL: u32 = u32::from_be_bytes(*b"glob");
+const K_SCOPE_OUTPUT: u32 = u32::from_be_bytes(*b"outp");
 const K_ELEMENT_MAIN: u32 = 0;
 const K_OBJECT_SYSTEM: u32 = 1; // kAudioObjectSystemObject
 
@@ -233,6 +235,18 @@ impl Libs {
         result
     }
 
+    /// Whether `dev` has any output streams (input-only devices such as a
+    /// microphone have none).
+    unsafe fn has_output_streams(&self, dev: AudioObjectID) -> bool {
+        let addr = AudioObjectPropertyAddress {
+            selector: K_DEVICE_STREAMS,
+            scope: K_SCOPE_OUTPUT,
+            element: K_ELEMENT_MAIN,
+        };
+        let mut size: u32 = 0;
+        (self.get_size)(dev, &addr, 0, std::ptr::null(), &mut size) == 0 && size > 0
+    }
+
     unsafe fn cfstring_to_string(&self, s: CFStringRef) -> Option<String> {
         let len = (self.cfstring_len)(s);
         // Worst case 4 UTF-8 bytes per UTF-16 unit, plus a NUL.
@@ -274,6 +288,9 @@ impl Libs {
         let want = wanted.to_lowercase();
         let mut names: Vec<String> = Vec::new();
         for &dev in &ids {
+            if !self.has_output_streams(dev) {
+                continue;
+            }
             let uid = self.device_string(dev, K_DEVICE_UID);
             let name = self.device_string(dev, K_OBJECT_NAME);
             if let Some(n) = &name {
