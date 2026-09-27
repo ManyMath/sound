@@ -113,6 +113,14 @@ impl VoiceShared {
             position: Arc::new(AtomicU64::new(0)),
         }
     }
+
+    /// Whether the playback loop has something to act on besides new audio:
+    /// a stop, a pause, or a pending seek.
+    fn interrupted(&self) -> bool {
+        self.stop.load(Ordering::SeqCst)
+            || self.paused.load(Ordering::SeqCst)
+            || self.seek_request.load(Ordering::SeqCst) != NO_SEEK
+    }
 }
 
 /// Interleaved S16LE samples fed by a concurrent decode thread (for
@@ -159,15 +167,13 @@ impl LiveBuffer {
     }
 
     /// Blocks until at least `upto` samples are available, decoding has
-    /// finished, decoding has failed, or `stop` is set. The stop check is why
-    /// this polls with a timed wait: a stalled network feeder may never
-    /// notify again, and a voice being freed must not hang its caller.
-    fn wait_until(&self, upto: usize, stop: &AtomicBool) {
+    /// finished, decoding has failed, or the voice is interrupted (stopped,
+    /// paused, or seeked). The interrupt check is why this polls with a timed
+    /// wait: a stalled network feeder may never notify again, and the voice
+    /// must still respond to its controls.
+    fn wait_until(&self, upto: usize, sh: &VoiceShared) {
         let mut state = self.state.lock().unwrap();
-        while state.samples.len() < upto
-            && state.final_len.is_none()
-            && !stop.load(Ordering::SeqCst)
-        {
+        while state.samples.len() < upto && state.final_len.is_none() && !sh.interrupted() {
             let (s, _) = self
                 .ready
                 .wait_timeout(state, std::time::Duration::from_millis(50))
@@ -186,15 +192,15 @@ enum Samples {
 }
 
 impl Samples {
-    /// Blocks until at least `upto` samples exist, no more are coming, or
-    /// `stop` is set, then returns the number currently available and whether
-    /// that number is final (no more will ever be produced). Callers must
-    /// re-check `stop` after this returns.
-    fn wait_len(&self, upto: usize, stop: &AtomicBool) -> (usize, bool) {
+    /// Blocks until at least `upto` samples exist, no more are coming, or the
+    /// voice is interrupted, then returns the number currently available and
+    /// whether that number is final (no more will ever be produced). Fewer
+    /// than `upto` non-final samples means an interrupt cut the wait short.
+    fn wait_len(&self, upto: usize, sh: &VoiceShared) -> (usize, bool) {
         match self {
             Samples::Complete(v) => (v.len(), true),
             Samples::Live(live) => {
-                live.wait_until(upto, stop);
+                live.wait_until(upto, sh);
                 let state = live.state.lock().unwrap();
                 (state.samples.len(), state.final_len.is_some())
             }
@@ -683,16 +689,13 @@ fn play_pcm<S: PcmSink>(pcm: &S, channels: u32, samples: Samples, sh: &VoiceShar
             return;
         }
 
-        // Honor a pending seek (frame index -> sample index). For a still-
-        // streaming `Samples::Live`, this blocks until either that many
-        // samples have decoded or decoding finishes (e.g. a seek past a
-        // short track's end).
+        // Honor a pending seek (frame index -> sample index). A target past
+        // what a still-streaming `Samples::Live` has decoded is waited for
+        // below, like any other not-yet-decoded audio.
         let seek = sh.seek_request.swap(NO_SEEK, Ordering::SeqCst);
         if seek >= 0 {
-            let target = (seek as usize).saturating_mul(channels);
-            let (available, _) = samples.wait_len(target, &sh.stop);
-            i = target.min(available);
-            sh.position.store((i / channels) as u64, Ordering::SeqCst);
+            i = (seek as usize).saturating_mul(channels);
+            sh.position.store(seek as u64, Ordering::SeqCst);
         }
 
         // While paused, emit nothing (the device underruns to silence and
@@ -705,14 +708,20 @@ fn play_pcm<S: PcmSink>(pcm: &S, channels: u32, samples: Samples, sh: &VoiceShar
 
         // Blocks (for `Samples::Live`) until either one more sample exists,
         // decoding has finished with nothing more to give, or the voice is
-        // stopped (which also unblocks the wait).
-        let (available, is_final) = samples.wait_len(i + 1, &sh.stop);
+        // stopped, paused, or seeked (handled at the top of the loop).
+        let (available, is_final) = samples.wait_len(i.saturating_add(1), sh);
         if sh.stop.load(Ordering::SeqCst) {
             sh.state.store(STATE_STOPPED, Ordering::SeqCst);
             return;
         }
 
         if i >= available {
+            if !is_final {
+                continue;
+            }
+            // A seek may have landed past the end.
+            i = available;
+            sh.position.store((i / channels) as u64, Ordering::SeqCst);
             // A download/decode failure only ends the voice once the audio
             // decoded before it has played out.
             if let Some(e) = samples.take_error() {
@@ -725,10 +734,6 @@ fn play_pcm<S: PcmSink>(pcm: &S, channels: u32, samples: Samples, sh: &VoiceShar
                 sh.position.store(0, Ordering::SeqCst);
                 continue;
             }
-            // `is_final` is guaranteed here: `wait_len` only returns with
-            // `available <= i` once decoding has finished (otherwise it
-            // blocks for more data).
-            debug_assert!(is_final);
             break;
         }
 
@@ -1528,6 +1533,61 @@ mod tests {
             assert_eq!(sink.0.lock().unwrap().len(), 10_000);
             assert_eq!(sh.state.load(Ordering::SeqCst), STATE_ERROR);
             assert_eq!(sh.error.lock().unwrap().as_deref(), Some("body truncated"));
+        }
+
+        /// Polls `cond` for up to two seconds.
+        fn eventually(cond: impl Fn() -> bool) -> bool {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                if cond() {
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            false
+        }
+
+        #[test]
+        fn pause_and_seek_work_while_a_stream_is_stalled() {
+            let live = LiveBuffer::new();
+            live.push(&[1; 4096]);
+            let sh = VoiceShared::new(false);
+            let sink = Arc::new(RecordingSink::default());
+            let thread = {
+                let (live, sh, sink) = (live.clone(), sh.clone(), sink.clone());
+                std::thread::spawn(move || play_pcm(&*sink, 1, Samples::Live(live), &sh))
+            };
+            // Everything decoded so far has played; the feeder has stalled.
+            assert!(eventually(|| sink.0.lock().unwrap().len() == 4096));
+
+            sh.paused.store(true, Ordering::SeqCst);
+            assert!(eventually(
+                || sh.state.load(Ordering::SeqCst) == STATE_PAUSED
+            ));
+
+            // Seeking back into the buffered audio replays it on resume.
+            sh.seek_request.store(0, Ordering::SeqCst);
+            sh.paused.store(false, Ordering::SeqCst);
+            assert!(eventually(|| sink.0.lock().unwrap().len() == 8192));
+
+            sh.stop.store(true, Ordering::SeqCst);
+            thread.join().unwrap();
+            assert_eq!(sh.state.load(Ordering::SeqCst), STATE_STOPPED);
+        }
+
+        #[test]
+        fn seeking_past_the_end_completes() {
+            for target in [5_000, i64::MAX] {
+                let sh = VoiceShared::new(false);
+                sh.seek_request.store(target, Ordering::SeqCst);
+                let sink = RecordingSink::default();
+
+                play_pcm(&sink, 2, Samples::Complete(vec![0; 2_000]), &sh);
+
+                assert!(sink.0.lock().unwrap().is_empty());
+                assert_eq!(sh.state.load(Ordering::SeqCst), STATE_COMPLETED);
+                assert_eq!(sh.position.load(Ordering::SeqCst), 1_000);
+            }
         }
     }
 }
