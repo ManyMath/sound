@@ -712,13 +712,14 @@ fn play_pcm<S: PcmSink>(pcm: &S, channels: u32, samples: Samples, sh: &VoiceShar
             return;
         }
 
-        if let Some(e) = samples.take_error() {
-            *sh.error.lock().unwrap() = Some(e);
-            sh.state.store(STATE_ERROR, Ordering::SeqCst);
-            return;
-        }
-
         if i >= available {
+            // A download/decode failure only ends the voice once the audio
+            // decoded before it has played out.
+            if let Some(e) = samples.take_error() {
+                *sh.error.lock().unwrap() = Some(e);
+                sh.state.store(STATE_ERROR, Ordering::SeqCst);
+                return;
+            }
             if sh.looping.load(Ordering::SeqCst) {
                 i = 0;
                 sh.position.store(0, Ordering::SeqCst);
@@ -1490,5 +1491,43 @@ mod tests {
         let garbage = [0u8; 64];
         let d = unsafe { sound_decode_bytes(garbage.as_ptr(), garbage.len(), std::ptr::null()) };
         assert!(d.is_null());
+    }
+
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "windows"
+    ))]
+    mod play_pcm {
+        use super::super::*;
+
+        /// Records everything written instead of playing it.
+        #[derive(Default)]
+        struct RecordingSink(Mutex<Vec<i16>>);
+
+        impl PcmSink for RecordingSink {
+            fn write(&self, samples: &[i16]) -> Result<(), String> {
+                self.0.lock().unwrap().extend_from_slice(samples);
+                Ok(())
+            }
+            fn drain(&self) {}
+        }
+
+        #[test]
+        fn plays_out_buffered_audio_before_a_late_error() {
+            let live = LiveBuffer::new();
+            live.push(&[7; 10_000]);
+            live.finish(Some("body truncated".to_string()));
+            let sh = VoiceShared::new(false);
+            let sink = RecordingSink::default();
+
+            play_pcm(&sink, 1, Samples::Live(live), &sh);
+
+            assert_eq!(sink.0.lock().unwrap().len(), 10_000);
+            assert_eq!(sh.state.load(Ordering::SeqCst), STATE_ERROR);
+            assert_eq!(sh.error.lock().unwrap().as_deref(), Some("body truncated"));
+        }
     }
 }
