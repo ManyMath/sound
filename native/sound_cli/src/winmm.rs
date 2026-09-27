@@ -4,7 +4,7 @@
 //! use and load them at runtime. winmm.dll ships with every Windows install.
 
 use std::cell::UnsafeCell;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use libloading::Library;
 
@@ -369,6 +369,9 @@ impl Drop for WinMMPlayback {
 pub struct NamedSink {
     playback: WinMMPlayback,
     channels: u32,
+    // WinMMPlayback::write assumes a single caller; sound_sink_write may be
+    // called from several threads.
+    write_lock: Mutex<()>,
 }
 
 impl NamedSink {
@@ -379,10 +382,12 @@ impl NamedSink {
         Ok(Self {
             playback,
             channels: channels.max(1),
+            write_lock: Mutex::new(()),
         })
     }
 
     pub fn write(&self, samples: &[i16]) -> Result<usize, String> {
+        let _guard = self.write_lock.lock().unwrap_or_else(|p| p.into_inner());
         self.playback.write(samples)?;
         Ok(samples.len() / self.channels as usize)
     }
