@@ -204,12 +204,18 @@ impl WinMMPlayback {
 
     fn open_device(wmm: Arc<WinMM>, device: u32, channels: u32, rate: u32) -> Result<Self, String> {
         let channels = channels.max(1);
-        let block_align = channels as u16 * 2;
+        let block_align = channels
+            .checked_mul(2)
+            .and_then(|b| u16::try_from(b).ok())
+            .ok_or_else(|| format!("unsupported channel count {channels}"))?;
+        let avg_bytes_per_sec = rate
+            .checked_mul(block_align as u32)
+            .ok_or_else(|| format!("unsupported sample rate {rate}"))?;
         let wfx = WaveFormatEx {
             format_tag: WAVE_FORMAT_PCM,
             channels: channels as u16,
             samples_per_sec: rate,
-            avg_bytes_per_sec: rate * block_align as u32,
+            avg_bytes_per_sec,
             block_align,
             bits_per_sample: 16,
             cb_size: 0,
