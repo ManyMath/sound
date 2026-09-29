@@ -729,7 +729,8 @@ fn play_pcm<S: PcmSink>(pcm: &S, channels: u32, samples: Samples, sh: &VoiceShar
                 sh.state.store(STATE_ERROR, Ordering::SeqCst);
                 return;
             }
-            if sh.looping.load(Ordering::SeqCst) {
+            // Looping nothing would spin without ever writing or sleeping.
+            if sh.looping.load(Ordering::SeqCst) && available > 0 {
                 i = 0;
                 sh.position.store(0, Ordering::SeqCst);
                 continue;
@@ -1588,6 +1589,21 @@ mod tests {
                 assert_eq!(sh.state.load(Ordering::SeqCst), STATE_COMPLETED);
                 assert_eq!(sh.position.load(Ordering::SeqCst), 1_000);
             }
+        }
+
+        #[test]
+        fn looping_empty_audio_completes() {
+            let sh = VoiceShared::new(true);
+            let thread = {
+                let sh = sh.clone();
+                std::thread::spawn(move || {
+                    play_pcm(&RecordingSink::default(), 1, Samples::Complete(vec![]), &sh)
+                })
+            };
+            let done = eventually(|| sh.state.load(Ordering::SeqCst) == STATE_COMPLETED);
+            sh.stop.store(true, Ordering::SeqCst);
+            thread.join().unwrap();
+            assert!(done);
         }
     }
 }
