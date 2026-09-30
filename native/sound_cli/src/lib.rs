@@ -555,32 +555,27 @@ fn run_voice_url<S: PcmSink>(
 ) {
     // The voice's stop flag doubles as the download-abort signal, so freeing
     // or stopping the voice cancels the fetch and unblocks the probe/decode.
+    // The resulting error is just the stop, not a failure.
+    let fail = |msg: String| {
+        if sh.stop.load(Ordering::SeqCst) {
+            sh.state.store(STATE_STOPPED, Ordering::SeqCst);
+        } else {
+            *sh.error.lock().unwrap() = Some(msg);
+            sh.state.store(STATE_ERROR, Ordering::SeqCst);
+        }
+    };
     let mut decoder =
         match decode::open_url_decoder(url, headers, format_hint.as_deref(), sh.stop.clone()) {
             Ok(d) => d,
-            Err(e) => {
-                *sh.error.lock().unwrap() = Some(e);
-                sh.state.store(STATE_ERROR, Ordering::SeqCst);
-                return;
-            }
+            Err(e) => return fail(e),
         };
     let first_chunk = match decoder.next_chunk() {
         Ok(Some(chunk)) => chunk,
-        Ok(None) => {
-            *sh.error.lock().unwrap() = Some("stream ended before any audio decoded".to_string());
-            sh.state.store(STATE_ERROR, Ordering::SeqCst);
-            return;
-        }
-        Err(e) => {
-            *sh.error.lock().unwrap() = Some(e);
-            sh.state.store(STATE_ERROR, Ordering::SeqCst);
-            return;
-        }
+        Ok(None) => return fail("stream ended before any audio decoded".to_string()),
+        Err(e) => return fail(e),
     };
     if decoder.channels == 0 || decoder.rate == 0 {
-        *sh.error.lock().unwrap() = Some("decoded zero audio frames".to_string());
-        sh.state.store(STATE_ERROR, Ordering::SeqCst);
-        return;
+        return fail("decoded zero audio frames".to_string());
     }
 
     let channels = decoder.channels;
@@ -1589,6 +1584,62 @@ mod tests {
                 assert_eq!(sh.state.load(Ordering::SeqCst), STATE_COMPLETED);
                 assert_eq!(sh.position.load(Ordering::SeqCst), 1_000);
             }
+        }
+
+        /// Serves `body` as one HTTP response over a local socket, `pace`
+        /// bytes every 20 ms, or holds the connection open without replying
+        /// when `body` is `None`. Returns the URL.
+        fn serve(body: Option<Vec<u8>>, pace: usize) -> String {
+            use std::io::{Read, Write};
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/a.wav", listener.local_addr().unwrap());
+            std::thread::spawn(move || {
+                let (mut conn, _) = listener.accept().unwrap();
+                let mut req = [0u8; 1024];
+                let _ = conn.read(&mut req);
+                let Some(body) = body else {
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    return;
+                };
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                );
+                let _ = conn.write_all(head.as_bytes());
+                for part in body.chunks(pace) {
+                    if conn.write_all(part).is_err() {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            });
+            url
+        }
+
+        #[test]
+        fn stopping_while_connecting_reports_stopped() {
+            let url = serve(None, 0);
+            let sh = VoiceShared::new(false);
+            sh.state.store(STATE_CONNECTING, Ordering::SeqCst);
+            let thread = {
+                let sh = sh.clone();
+                std::thread::spawn(move || {
+                    run_voice_url(
+                        url,
+                        Vec::new(),
+                        None,
+                        Arc::new(AtomicU32::new(0)),
+                        Arc::new(AtomicU64::new(0)),
+                        &sh,
+                        |_, _| Ok(RecordingSink::default()),
+                    )
+                })
+            };
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            sh.stop.store(true, Ordering::SeqCst);
+            thread.join().unwrap();
+            assert_eq!(sh.state.load(Ordering::SeqCst), STATE_STOPPED);
+            assert!(sh.error.lock().unwrap().is_none());
         }
 
         #[test]
