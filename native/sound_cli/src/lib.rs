@@ -1174,18 +1174,16 @@ pub extern "C" fn sound_voice_free(player: *mut Player, id: u64) -> c_int {
 }
 
 /// Copies a voice's error message into the thread-local error buffer and
-/// returns it, or returns an empty string if there is none.
+/// returns it, or returns an empty string if there is none (or the id is
+/// unknown).
 #[no_mangle]
 pub extern "C" fn sound_voice_error(player: *mut Player, id: u64) -> *const c_char {
     if let Some(player) = with_player(player) {
         let voices = player.voices.lock().unwrap();
-        if let Some(v) = voices.get(&id) {
-            if let Some(msg) = v.shared.error.lock().unwrap().clone() {
-                set_last_error(msg);
-            } else {
-                set_last_error("");
-            }
-        }
+        let msg = voices
+            .get(&id)
+            .and_then(|v| v.shared.error.lock().unwrap().clone());
+        set_last_error(msg.unwrap_or_default());
     }
     sound_last_error()
 }
@@ -1498,6 +1496,18 @@ mod tests {
             0
         );
         sound_decoded_free(d);
+    }
+
+    #[test]
+    fn voice_error_is_empty_for_an_unknown_id() {
+        let player = sound_player_new();
+        if player.is_null() {
+            return; // no audio library on this host
+        }
+        set_last_error("an earlier failure");
+        let msg = sound_voice_error(player, 42);
+        assert_eq!(unsafe { CStr::from_ptr(msg) }.to_bytes(), b"");
+        sound_player_free(player);
     }
 
     #[test]
