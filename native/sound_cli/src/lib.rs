@@ -594,9 +594,22 @@ fn run_voice_url<S: PcmSink>(
         total_frames,
         sh.stop.clone(),
     );
+    // However playback ends (including a sink error), stop the feeder and the
+    // download behind it rather than letting them run until the voice is
+    // freed.
+    let _stop_feeder = SetOnDrop(&sh.stop);
 
     let sink = open_sink(channels, decoder_rate);
     run_voice(sink, channels, Samples::Live(live), sh);
+}
+
+/// Sets the flag when dropped.
+struct SetOnDrop<'a>(&'a AtomicBool);
+
+impl Drop for SetOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
 }
 
 /// Decodes the rest of `decoder`'s stream on a background thread, pushing
@@ -1503,6 +1516,8 @@ mod tests {
     ))]
     mod play_pcm {
         use super::super::*;
+        use hound::{WavSpec, WavWriter};
+        use std::io::Cursor;
 
         /// Records everything written instead of playing it.
         #[derive(Default)]
@@ -1640,6 +1655,48 @@ mod tests {
             thread.join().unwrap();
             assert_eq!(sh.state.load(Ordering::SeqCst), STATE_STOPPED);
             assert!(sh.error.lock().unwrap().is_none());
+        }
+
+        /// A mono 16-bit 44.1 kHz WAV of `seconds` of silence.
+        fn silent_wav(seconds: u32) -> Vec<u8> {
+            let spec = WavSpec {
+                channels: 1,
+                sample_rate: 44_100,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            };
+            let mut buf = Cursor::new(Vec::new());
+            let mut w = WavWriter::new(&mut buf, spec).unwrap();
+            for _ in 0..44_100 * seconds {
+                w.write_sample(0i16).unwrap();
+            }
+            w.finalize().unwrap();
+            buf.into_inner()
+        }
+
+        #[test]
+        fn a_sink_error_stops_the_download() {
+            // ~2 s of audio served over ~1 s, so it is still downloading when
+            // the sink fails.
+            let url = serve(Some(silent_wav(2)), 4096);
+            let sh = VoiceShared::new(false);
+            let total = Arc::new(AtomicU64::new(0));
+            run_voice_url(
+                url,
+                Vec::new(),
+                None,
+                Arc::new(AtomicU32::new(0)),
+                total.clone(),
+                &sh,
+                |_, _| Err::<RecordingSink, _>("no device".to_string()),
+            );
+            assert_eq!(sh.state.load(Ordering::SeqCst), STATE_ERROR);
+
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let settled = total.load(Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            assert_eq!(total.load(Ordering::SeqCst), settled);
+            assert!(settled < 88_200, "decoded the whole stream: {settled}");
         }
 
         #[test]
