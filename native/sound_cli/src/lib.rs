@@ -83,6 +83,26 @@ fn set_last_error(msg: impl Into<String>) {
     LAST_ERROR.with(|e| *e.borrow_mut() = c);
 }
 
+/// Runs an entry point's body, turning a panic into `fallback` plus an error
+/// message. Unwinding out of an `extern "C"` fn aborts the host process, so
+/// the entry points that decode or spawn threads go through this.
+fn catch_panic<T>(fallback: T, on_panic: impl FnOnce(String), f: impl FnOnce() -> T) -> T {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|payload| {
+        on_panic(format!("internal error: {}", panic_message(&*payload)));
+        fallback
+    })
+}
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        s
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s
+    } else {
+        "panic"
+    }
+}
+
 /// Controls shared between a voice's playback thread and the C ABI.
 #[derive(Clone)]
 struct VoiceShared {
@@ -836,26 +856,28 @@ pub unsafe extern "C" fn sound_play_bytes(
     format: *const c_char,
     looping: c_int,
 ) -> u64 {
-    let Some(player) = with_player(player) else {
-        return 0;
-    };
-    if data.is_null() {
-        set_last_error("null data");
-        return 0;
-    }
-    let bytes = std::slice::from_raw_parts(data, len);
-    let hint = if format.is_null() {
-        None
-    } else {
-        CStr::from_ptr(format).to_str().ok()
-    };
-    match decode::decode_bytes(bytes, hint) {
-        Ok(audio) => player.spawn(audio, looping != 0),
-        Err(e) => {
-            set_last_error(e);
-            0
+    catch_panic(0, set_last_error, || {
+        let Some(player) = with_player(player) else {
+            return 0;
+        };
+        if data.is_null() {
+            set_last_error("null data");
+            return 0;
         }
-    }
+        let bytes = std::slice::from_raw_parts(data, len);
+        let hint = if format.is_null() {
+            None
+        } else {
+            CStr::from_ptr(format).to_str().ok()
+        };
+        match decode::decode_bytes(bytes, hint) {
+            Ok(audio) => player.spawn(audio, looping != 0),
+            Err(e) => {
+                set_last_error(e);
+                0
+            }
+        }
+    })
 }
 
 /// Decodes an audio file (format auto-detected) and starts playback. Returns a
@@ -870,27 +892,29 @@ pub unsafe extern "C" fn sound_play_file(
     path: *const c_char,
     looping: c_int,
 ) -> u64 {
-    let Some(player) = with_player(player) else {
-        return 0;
-    };
-    if path.is_null() {
-        set_last_error("null path");
-        return 0;
-    }
-    let path = match CStr::from_ptr(path).to_str() {
-        Ok(p) => p,
-        Err(_) => {
-            set_last_error("path is not valid UTF-8");
+    catch_panic(0, set_last_error, || {
+        let Some(player) = with_player(player) else {
+            return 0;
+        };
+        if path.is_null() {
+            set_last_error("null path");
             return 0;
         }
-    };
-    match decode::decode_file(path) {
-        Ok(audio) => player.spawn(audio, looping != 0),
-        Err(e) => {
-            set_last_error(e);
-            0
+        let path = match CStr::from_ptr(path).to_str() {
+            Ok(p) => p,
+            Err(_) => {
+                set_last_error("path is not valid UTF-8");
+                return 0;
+            }
+        };
+        match decode::decode_file(path) {
+            Ok(audio) => player.spawn(audio, looping != 0),
+            Err(e) => {
+                set_last_error(e);
+                0
+            }
         }
-    }
+    })
 }
 
 /// Streams and plays the audio at `url` (`http://`/`https://`), sending
@@ -929,39 +953,41 @@ pub unsafe extern "C" fn sound_play_url(
     format: *const c_char,
     looping: c_int,
 ) -> u64 {
-    let Some(player) = with_player(player) else {
-        return 0;
-    };
-    if url.is_null() {
-        set_last_error("null url");
-        return 0;
-    }
-    let url = match CStr::from_ptr(url).to_str() {
-        Ok(u) => u.to_string(),
-        Err(_) => {
-            set_last_error("url is not valid UTF-8");
+    catch_panic(0, set_last_error, || {
+        let Some(player) = with_player(player) else {
+            return 0;
+        };
+        if url.is_null() {
+            set_last_error("null url");
             return 0;
         }
-    };
-    let headers = match read_headers(header_names, header_values, header_count) {
-        Ok(h) => h,
-        Err(e) => {
-            set_last_error(e);
-            return 0;
-        }
-    };
-    let format_hint = if format.is_null() {
-        None
-    } else {
-        match CStr::from_ptr(format).to_str() {
-            Ok(f) => Some(f.to_string()),
+        let url = match CStr::from_ptr(url).to_str() {
+            Ok(u) => u.to_string(),
             Err(_) => {
-                set_last_error("format hint is not valid UTF-8");
+                set_last_error("url is not valid UTF-8");
                 return 0;
             }
-        }
-    };
-    player.spawn_url(url, headers, format_hint, looping != 0)
+        };
+        let headers = match read_headers(header_names, header_values, header_count) {
+            Ok(h) => h,
+            Err(e) => {
+                set_last_error(e);
+                return 0;
+            }
+        };
+        let format_hint = if format.is_null() {
+            None
+        } else {
+            match CStr::from_ptr(format).to_str() {
+                Ok(f) => Some(f.to_string()),
+                Err(_) => {
+                    set_last_error("format hint is not valid UTF-8");
+                    return 0;
+                }
+            }
+        };
+        player.spawn_url(url, headers, format_hint, looping != 0)
+    })
 }
 
 /// Reads `count` parallel NUL-terminated C string pairs from `names`/`values`
@@ -1223,27 +1249,29 @@ pub unsafe extern "C" fn sound_decode_bytes(
     len: usize,
     format: *const c_char,
 ) -> *mut Decoded {
-    if data.is_null() {
-        set_last_error("null data");
-        return std::ptr::null_mut();
-    }
-    let bytes = std::slice::from_raw_parts(data, len);
-    let hint = if format.is_null() {
-        None
-    } else {
-        CStr::from_ptr(format).to_str().ok()
-    };
-    match decode::decode_bytes(bytes, hint) {
-        Ok(a) => Box::into_raw(Box::new(Decoded {
-            samples: a.samples,
-            channels: a.channels,
-            rate: a.rate,
-        })),
-        Err(e) => {
-            set_last_error(e);
-            std::ptr::null_mut()
+    catch_panic(std::ptr::null_mut(), set_last_error, || {
+        if data.is_null() {
+            set_last_error("null data");
+            return std::ptr::null_mut();
         }
-    }
+        let bytes = std::slice::from_raw_parts(data, len);
+        let hint = if format.is_null() {
+            None
+        } else {
+            CStr::from_ptr(format).to_str().ok()
+        };
+        match decode::decode_bytes(bytes, hint) {
+            Ok(a) => Box::into_raw(Box::new(Decoded {
+                samples: a.samples,
+                channels: a.channels,
+                rate: a.rate,
+            })),
+            Err(e) => {
+                set_last_error(e);
+                std::ptr::null_mut()
+            }
+        }
+    })
 }
 
 /// Decodes an audio file (format auto-detected) into an opaque [Decoded]
@@ -1254,28 +1282,30 @@ pub unsafe extern "C" fn sound_decode_bytes(
 /// [sound_decoded_free].
 #[no_mangle]
 pub unsafe extern "C" fn sound_decode_file(path: *const c_char) -> *mut Decoded {
-    if path.is_null() {
-        set_last_error("null path");
-        return std::ptr::null_mut();
-    }
-    let path = match CStr::from_ptr(path).to_str() {
-        Ok(p) => p,
-        Err(_) => {
-            set_last_error("path is not valid UTF-8");
+    catch_panic(std::ptr::null_mut(), set_last_error, || {
+        if path.is_null() {
+            set_last_error("null path");
             return std::ptr::null_mut();
         }
-    };
-    match decode::decode_file(path) {
-        Ok(a) => Box::into_raw(Box::new(Decoded {
-            samples: a.samples,
-            channels: a.channels,
-            rate: a.rate,
-        })),
-        Err(e) => {
-            set_last_error(e);
-            std::ptr::null_mut()
+        let path = match CStr::from_ptr(path).to_str() {
+            Ok(p) => p,
+            Err(_) => {
+                set_last_error("path is not valid UTF-8");
+                return std::ptr::null_mut();
+            }
+        };
+        match decode::decode_file(path) {
+            Ok(a) => Box::into_raw(Box::new(Decoded {
+                samples: a.samples,
+                channels: a.channels,
+                rate: a.rate,
+            })),
+            Err(e) => {
+                set_last_error(e);
+                std::ptr::null_mut()
+            }
         }
-    }
+    })
 }
 
 /// Returns the number of interleaved samples in a [Decoded] buffer, or -1 if
@@ -1375,24 +1405,26 @@ pub unsafe extern "C" fn sound_sink_open(
     rate: u32,
     channels: u32,
 ) -> *mut NamedOutputSink {
-    if device.is_null() {
-        set_sink_error("null device name");
-        return std::ptr::null_mut();
-    }
-    let name = match CStr::from_ptr(device).to_str() {
-        Ok(s) => s,
-        Err(_) => {
-            set_sink_error("device name is not valid UTF-8");
+    catch_panic(std::ptr::null_mut(), set_sink_error, || {
+        if device.is_null() {
+            set_sink_error("null device name");
             return std::ptr::null_mut();
         }
-    };
-    match NamedOutputSink::open(name, rate, channels) {
-        Ok(s) => Box::into_raw(Box::new(s)),
-        Err(e) => {
-            set_sink_error(e);
-            std::ptr::null_mut()
+        let name = match CStr::from_ptr(device).to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                set_sink_error("device name is not valid UTF-8");
+                return std::ptr::null_mut();
+            }
+        };
+        match NamedOutputSink::open(name, rate, channels) {
+            Ok(s) => Box::into_raw(Box::new(s)),
+            Err(e) => {
+                set_sink_error(e);
+                std::ptr::null_mut()
+            }
         }
-    }
+    })
 }
 
 /// Queues `len` interleaved S16LE samples for the device. Returns the number of
@@ -1408,19 +1440,21 @@ pub unsafe extern "C" fn sound_sink_write(
     samples: *const i16,
     len: usize,
 ) -> i32 {
-    if sink.is_null() || samples.is_null() {
-        set_sink_error("null sink or samples");
-        return -1;
-    }
-    let sink = &*sink;
-    let slice = std::slice::from_raw_parts(samples, len);
-    match sink.write(slice) {
-        Ok(frames) => i32::try_from(frames).unwrap_or(i32::MAX),
-        Err(e) => {
-            set_sink_error(e);
-            -1
+    catch_panic(-1, set_sink_error, || {
+        if sink.is_null() || samples.is_null() {
+            set_sink_error("null sink or samples");
+            return -1;
         }
-    }
+        let sink = &*sink;
+        let slice = std::slice::from_raw_parts(samples, len);
+        match sink.write(slice) {
+            Ok(frames) => i32::try_from(frames).unwrap_or(i32::MAX),
+            Err(e) => {
+                set_sink_error(e);
+                -1
+            }
+        }
+    })
 }
 
 /// Closes and frees a sink from [sound_sink_open].
@@ -1496,6 +1530,15 @@ mod tests {
             0
         );
         sound_decoded_free(d);
+    }
+
+    #[test]
+    fn catch_panic_returns_the_fallback() {
+        let mut seen = String::new();
+        let v = catch_panic(7, |m| seen = m, || -> i32 { panic!("boom") });
+        assert_eq!(v, 7);
+        assert_eq!(seen, "internal error: boom");
+        assert_eq!(catch_panic(7, |_| unreachable!(), || 1), 1);
     }
 
     #[test]
