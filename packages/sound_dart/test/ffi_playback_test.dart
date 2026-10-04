@@ -182,6 +182,31 @@ void main() {
       await pb.dispose();
     });
 
+    test('pause and resume hold across polls', () async {
+      Sound.registerBackend(FfiBackend(), makeActive: true);
+      // At 8 kHz each native chunk write lasts ~256 ms, so the playback
+      // thread notices pause/resume well after several 50 ms polls.
+      final pb = await Sound.playBytes(
+        buildSineWav(sampleRate: 8000, milliseconds: 3000),
+        format: 'wav',
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      Future<Set<PlaybackState>> sample() async {
+        final seen = <PlaybackState>{};
+        for (var i = 0; i < 8; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 30));
+          seen.add(pb.state);
+        }
+        return seen;
+      }
+
+      await pb.pause();
+      expect(await sample(), {PlaybackState.paused});
+      await pb.resume();
+      expect(await sample(), {PlaybackState.playing});
+      await pb.dispose();
+    });
+
     test('seek near the end finishes quickly', () async {
       Sound.registerBackend(FfiBackend(), makeActive: true);
       final pb = await Sound.playBytes(

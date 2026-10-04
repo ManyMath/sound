@@ -411,6 +411,7 @@ class FfiPlayback implements Playback {
   int _voiceId = 0;
   int _rate = 0;
   int _durationFrames = 0;
+  bool _pauseRequested = false;
   PlaybackState _state = PlaybackState.idle;
   Timer? _poll;
   // Made up front and replaced only once used up, so a future taken before
@@ -439,6 +440,7 @@ class FfiPlayback implements Playback {
     if (_state == PlaybackState.disposed) return;
     _freeVoice();
     if (_completer.isCompleted) _completer = _newCompleter();
+    _pauseRequested = false;
     _voiceId = _start();
     if (_voiceId == 0) {
       _state = PlaybackState.idle;
@@ -533,12 +535,14 @@ class FfiPlayback implements Playback {
     _durationFrames = _b.durationFrames(_player, _voiceId);
     final native = _b.voiceState(_player, _voiceId);
     switch (native) {
+      // The playback thread only notices pause/resume between chunk writes,
+      // so its report lags a request; until it catches up, the request wins.
       case _stateConnecting:
-        _state = PlaybackState.connecting;
-      case _statePlaying:
-        _state = PlaybackState.playing;
-      case _statePaused:
-        _state = PlaybackState.paused;
+        _state = _pauseRequested
+            ? PlaybackState.paused
+            : PlaybackState.connecting;
+      case _statePlaying || _statePaused:
+        _state = _pauseRequested ? PlaybackState.paused : PlaybackState.playing;
       case _stateCompleted:
         _finish(PlaybackState.completed, complete: true);
       case _stateStopped:
@@ -601,6 +605,7 @@ class FfiPlayback implements Playback {
       return;
     }
     _b.pause(_player, _voiceId);
+    _pauseRequested = true;
     _state = PlaybackState.paused;
   }
 
@@ -608,7 +613,8 @@ class FfiPlayback implements Playback {
   Future<void> resume() async {
     if (_voiceId == 0 || _state != PlaybackState.paused) return;
     _b.resume(_player, _voiceId);
-    _state = PlaybackState.playing;
+    _pauseRequested = false;
+    _state = _rate > 0 ? PlaybackState.playing : PlaybackState.connecting;
   }
 
   @override
