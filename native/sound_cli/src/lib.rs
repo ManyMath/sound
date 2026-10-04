@@ -647,26 +647,24 @@ fn spawn_decode_feeder(
 ) {
     std::thread::spawn(move || {
         let channels = channels.max(1) as u64;
-        loop {
+        let fed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| loop {
             if stop.load(Ordering::SeqCst) {
-                live.finish(None);
-                return;
+                return None;
             }
             match decoder.next_chunk() {
                 Ok(Some(chunk)) => {
                     live.push(&chunk);
                     total_frames.fetch_add(chunk.len() as u64 / channels, Ordering::SeqCst);
                 }
-                Ok(None) => {
-                    live.finish(None);
-                    return;
-                }
-                Err(e) => {
-                    live.finish(Some(e));
-                    return;
-                }
+                Ok(None) => return None,
+                Err(e) => return Some(e),
             }
-        }
+        }));
+        // Always finish, even after a panic, or playback would wait on the
+        // buffer until the voice is stopped.
+        live.finish(
+            fed.unwrap_or_else(|p| Some(format!("internal error: {}", panic_message(&*p)))),
+        );
     });
 }
 
@@ -692,7 +690,16 @@ fn run_voice<S: PcmSink>(
             return;
         }
     };
-    play_pcm(&sink, channels, samples, sh);
+    // A panic would otherwise leave the voice reporting its last state
+    // (e.g. PLAYING) forever.
+    let played = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        play_pcm(&sink, channels, samples, sh)
+    }));
+    if let Err(p) = played {
+        let msg = format!("internal error: {}", panic_message(&*p));
+        *sh.error.lock().unwrap_or_else(|e| e.into_inner()) = Some(msg);
+        sh.state.store(STATE_ERROR, Ordering::SeqCst);
+    }
 }
 
 /// Platform-independent playback loop: chunks the samples, applies gain, honors
@@ -1750,6 +1757,24 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(300));
             assert_eq!(total.load(Ordering::SeqCst), settled);
             assert!(settled < 88_200, "decoded the whole stream: {settled}");
+        }
+
+        #[test]
+        fn a_panicking_sink_fails_the_voice() {
+            struct PanickingSink;
+            impl PcmSink for PanickingSink {
+                fn write(&self, _: &[i16]) -> Result<(), String> {
+                    panic!("device exploded")
+                }
+                fn drain(&self) {}
+            }
+            let sh = VoiceShared::new(false);
+            run_voice(Ok(PanickingSink), 1, Samples::Complete(vec![0; 100]), &sh);
+            assert_eq!(sh.state.load(Ordering::SeqCst), STATE_ERROR);
+            assert_eq!(
+                sh.error.lock().unwrap().as_deref(),
+                Some("internal error: device exploded")
+            );
         }
 
         #[test]
