@@ -413,7 +413,14 @@ class FfiPlayback implements Playback {
   int _durationFrames = 0;
   PlaybackState _state = PlaybackState.idle;
   Timer? _poll;
-  Completer<void>? _completer;
+  // Made up front and replaced only once used up, so a future taken before
+  // play() - or on a handle that is only ever disposed - still completes.
+  Completer<void> _completer = _newCompleter();
+
+  // A voice error completes this with an error; ignore() keeps that from
+  // surfacing as an uncaught error when nobody awaits onComplete, while
+  // anyone who does still receives it.
+  static Completer<void> _newCompleter() => Completer<void>()..future.ignore();
 
   _Bindings get _b => _backend._bindings!;
   Pointer<Void> get _player => _backend._player;
@@ -425,16 +432,13 @@ class FfiPlayback implements Playback {
   bool get isPlaying => _state == PlaybackState.playing;
 
   @override
-  Future<void> get onComplete => (_completer ??= Completer<void>()).future;
+  Future<void> get onComplete => _completer.future;
 
   @override
   Future<void> play() async {
     if (_state == PlaybackState.disposed) return;
     _freeVoice();
-    // A voice error completes this with an error; ignore() keeps that from
-    // surfacing as an uncaught error when nobody awaits onComplete, while
-    // anyone who does still receives it.
-    _completer = Completer<void>()..future.ignore();
+    if (_completer.isCompleted) _completer = _newCompleter();
     _voiceId = _start();
     if (_voiceId == 0) {
       _state = PlaybackState.idle;
@@ -542,11 +546,13 @@ class FfiPlayback implements Playback {
       case _stateError:
         final msg = _b.voiceError(_player, _voiceId);
         _finish(PlaybackState.stopped, complete: false);
-        _completer?.completeError(
-          PlaybackException(
-            msg == nullptr ? 'playback error' : msg.toDartString(),
-          ),
-        );
+        if (!_completer.isCompleted) {
+          _completer.completeError(
+            PlaybackException(
+              msg == nullptr ? 'playback error' : msg.toDartString(),
+            ),
+          );
+        }
       default: // -1 unknown
         _finish(PlaybackState.stopped, complete: false);
     }
@@ -556,9 +562,7 @@ class FfiPlayback implements Playback {
     _poll?.cancel();
     _poll = null;
     _state = state;
-    if (complete && _completer != null && !_completer!.isCompleted) {
-      _completer!.complete();
-    }
+    if (complete && !_completer.isCompleted) _completer.complete();
   }
 
   @override
@@ -638,6 +642,6 @@ class FfiPlayback implements Playback {
   Future<void> dispose() async {
     _freeVoice();
     _state = PlaybackState.disposed;
-    if (_completer != null && !_completer!.isCompleted) _completer!.complete();
+    if (!_completer.isCompleted) _completer.complete();
   }
 }

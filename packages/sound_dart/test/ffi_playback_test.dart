@@ -327,6 +327,27 @@ void main() {
       await pb.dispose();
     });
 
+    test('an onComplete taken before play() completes', () async {
+      Sound.registerBackend(FfiBackend(), makeActive: true);
+      final pb = await Sound.load(
+        SoundSource.bytes(buildSineWav(milliseconds: 80), format: 'wav'),
+      );
+      final done = pb.onComplete;
+      await pb.play();
+      await done.timeout(const Duration(seconds: 5));
+      expect(pb.state, PlaybackState.completed);
+      await pb.dispose();
+    });
+
+    test('dispose completes onComplete of a never-played handle', () async {
+      Sound.registerBackend(FfiBackend(), makeActive: true);
+      final pb = await Sound.load(
+        SoundSource.bytes(buildSineWav(milliseconds: 80), format: 'wav'),
+      );
+      await pb.dispose();
+      await pb.onComplete.timeout(const Duration(seconds: 1));
+    });
+
     test('dispose is idempotent and stop-after-dispose is safe', () async {
       Sound.registerBackend(FfiBackend(), makeActive: true);
       final pb = await Sound.playBytes(

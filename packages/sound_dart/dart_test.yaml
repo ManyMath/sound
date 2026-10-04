@@ -1,0 +1,5 @@
+# Lets test/web_audio_test.dart start an AudioContext without a user gesture.
+override_platforms:
+  chrome:
+    settings:
+      arguments: --autoplay-policy=no-user-gesture-required

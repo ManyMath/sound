@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:sound_dart/sound_dart.dart';
@@ -150,6 +151,19 @@ void main() {
       await pb.dispose();
       await pb.dispose(); // idempotent
       expect(pb.state, PlaybackState.disposed);
+    });
+
+    test('replaying re-arms onComplete for the new run', () async {
+      final pb = SilentPlayback(const Duration(milliseconds: 30));
+      await pb.play();
+      await pb.onComplete;
+      await pb.play();
+      var done = false;
+      unawaited(pb.onComplete.then((_) => done = true));
+      await Future<void>.delayed(Duration.zero);
+      expect(done, isFalse);
+      await pb.onComplete.timeout(const Duration(seconds: 1));
+      expect(pb.state, PlaybackState.completed);
     });
 
     test('pause/resume drive the paused state', () async {

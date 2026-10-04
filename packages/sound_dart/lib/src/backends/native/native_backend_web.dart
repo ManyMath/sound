@@ -93,7 +93,9 @@ class WebAudioPlayback implements Playback {
 
   web.AudioBufferSourceNode? _source;
   PlaybackState _state = PlaybackState.idle;
-  Completer<void>? _completer;
+  // Replaced only once used up, so a future taken before play() still
+  // completes.
+  Completer<void> _completer = Completer<void>();
 
   // Offset into the buffer (seconds) the current source started from, and the
   // AudioContext time when it started - together they give the position.
@@ -107,12 +109,12 @@ class WebAudioPlayback implements Playback {
   bool get isPlaying => _state == PlaybackState.playing;
 
   @override
-  Future<void> get onComplete => (_completer ??= Completer<void>()).future;
+  Future<void> get onComplete => _completer.future;
 
   @override
   Future<void> play() async {
     if (_state == PlaybackState.disposed) return;
-    _completer = Completer<void>();
+    if (_completer.isCompleted) _completer = Completer<void>();
     _startSource(0);
     _state = PlaybackState.playing;
   }
@@ -129,7 +131,7 @@ class WebAudioPlayback implements Playback {
     source.onended = (web.Event _) {
       if (_state == PlaybackState.playing) {
         _state = PlaybackState.completed;
-        if (!(_completer?.isCompleted ?? true)) _completer!.complete();
+        if (!_completer.isCompleted) _completer.complete();
       }
     }.toJS;
     source.start(0, _offset);
@@ -209,6 +211,6 @@ class WebAudioPlayback implements Playback {
   Future<void> dispose() async {
     _stopSource();
     _state = PlaybackState.disposed;
-    if (!(_completer?.isCompleted ?? true)) _completer!.complete();
+    if (!_completer.isCompleted) _completer.complete();
   }
 }

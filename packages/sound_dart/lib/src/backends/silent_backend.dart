@@ -84,7 +84,7 @@ class SilentPlayback implements Playback {
   SilentPlayback(this._duration);
 
   final Duration _duration;
-  final Completer<void> _completer = Completer<void>();
+  Completer<void> _completer = Completer<void>();
   Timer? _timer;
   PlaybackState _state = PlaybackState.idle;
 
@@ -101,6 +101,8 @@ class SilentPlayback implements Playback {
   Future<void> play() async {
     if (_state == PlaybackState.disposed) return;
     _timer?.cancel();
+    // Replaying re-arms onComplete for the new run.
+    if (_completer.isCompleted) _completer = Completer<void>();
     _state = PlaybackState.playing;
     if (_duration == Duration.zero) {
       _finish();
