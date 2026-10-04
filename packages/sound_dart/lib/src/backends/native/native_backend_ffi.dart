@@ -431,7 +431,10 @@ class FfiPlayback implements Playback {
   Future<void> play() async {
     if (_state == PlaybackState.disposed) return;
     _freeVoice();
-    _completer = Completer<void>();
+    // A voice error completes this with an error; ignore() keeps that from
+    // surfacing as an uncaught error when nobody awaits onComplete, while
+    // anyone who does still receives it.
+    _completer = Completer<void>()..future.ignore();
     _voiceId = _start();
     if (_voiceId == 0) {
       _state = PlaybackState.idle;

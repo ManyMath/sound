@@ -287,6 +287,31 @@ void main() {
       await expectLater(pb.onComplete, throwsA(isA<PlaybackException>()));
     });
 
+    test('a voice error nobody awaits is not an uncaught error', () async {
+      Sound.registerBackend(FfiBackend(), makeActive: true);
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((req) {
+        req.response.statusCode = 404;
+        req.response.close();
+      });
+      addTearDown(() => server.close(force: true));
+      final url = 'http://${server.address.host}:${server.port}/missing.wav';
+      final uncaught = <Object>[];
+      await runZonedGuarded(() async {
+        // Fire and forget: nothing listens to onComplete.
+        final pb = await Sound.playUrl(url);
+        final deadline = DateTime.now().add(const Duration(seconds: 5));
+        while (pb.state == PlaybackState.connecting &&
+            DateTime.now().isBefore(deadline)) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        expect(pb.state, PlaybackState.stopped);
+        await pb.dispose();
+      }, (e, _) => uncaught.add(e));
+      expect(uncaught, isEmpty);
+    });
+
     test('replaying the same handle restarts and completes', () async {
       Sound.registerBackend(FfiBackend(), makeActive: true);
       final pb = await Sound.playBytes(
