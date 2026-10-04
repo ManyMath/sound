@@ -121,7 +121,9 @@ class SilentPlayback implements Playback {
   Future<void> stop() async {
     if (_state == PlaybackState.disposed) return;
     _timer?.cancel();
-    if (_state == PlaybackState.playing) _state = PlaybackState.stopped;
+    if (_state == PlaybackState.playing || _state == PlaybackState.paused) {
+      _state = PlaybackState.stopped;
+    }
   }
 
   @override

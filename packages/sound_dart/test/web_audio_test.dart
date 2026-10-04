@@ -68,6 +68,18 @@ void main() {
     await pb.dispose();
   });
 
+  test('stop while paused ends the run; resume does not revive it', () async {
+    final pb = await Sound.play(
+      SoundSource.bytes(toneWav(milliseconds: 2000), format: 'wav'),
+    );
+    await pb.pause();
+    await pb.stop();
+    expect(pb.state, PlaybackState.stopped);
+    await pb.resume();
+    expect(pb.state, PlaybackState.stopped);
+    await pb.dispose();
+  });
+
   test('dispose completes onComplete of a never-played handle', () async {
     final pb = await Sound.load(SoundSource.bytes(toneWav(), format: 'wav'));
     await pb.dispose();

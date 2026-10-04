@@ -371,6 +371,55 @@ void main() {
       await pb.dispose();
     });
 
+    test('stop while paused stops; resume does not revive it', () async {
+      Sound.registerBackend(FfiBackend(), makeActive: true);
+      final pb = await Sound.playBytes(
+        buildSineWav(milliseconds: 2000),
+        format: 'wav',
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await pb.pause();
+      await pb.stop();
+      expect(pb.state, PlaybackState.stopped);
+      await pb.resume();
+      expect(pb.state, PlaybackState.stopped);
+      await pb.dispose();
+    });
+
+    test('pause/resume after completion leave it completed', () async {
+      Sound.registerBackend(FfiBackend(), makeActive: true);
+      final pb = await Sound.playBytes(
+        buildSineWav(milliseconds: 80),
+        format: 'wav',
+      );
+      await pb.onComplete.timeout(const Duration(seconds: 5));
+      await pb.pause();
+      expect(pb.state, PlaybackState.completed);
+      await pb.resume();
+      expect(pb.state, PlaybackState.completed);
+      await pb.dispose();
+    });
+
+    test('stop while connecting stops', () async {
+      Sound.registerBackend(FfiBackend(), makeActive: true);
+      final gate = Completer<void>();
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((req) async {
+        await gate.future;
+        await req.response.close();
+      });
+      addTearDown(() => server.close(force: true));
+      addTearDown(() {
+        if (!gate.isCompleted) gate.complete();
+      });
+      final url = 'http://${server.address.host}:${server.port}/tone.wav';
+      final pb = await Sound.playUrl(url);
+      expect(pb.state, PlaybackState.connecting);
+      await pb.stop();
+      expect(pb.state, PlaybackState.stopped);
+      await pb.dispose();
+    });
+
     test('stop ends playback early', () async {
       Sound.registerBackend(FfiBackend(), makeActive: true);
       final playback = await Sound.playBytes(

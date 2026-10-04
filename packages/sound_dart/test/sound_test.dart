@@ -166,6 +166,24 @@ void main() {
       expect(pb.state, PlaybackState.completed);
     });
 
+    test('stop while paused ends the run; resume does not revive it', () async {
+      final pb = SilentPlayback(const Duration(seconds: 10));
+      await pb.play();
+      await pb.pause();
+      await pb.stop();
+      expect(pb.state, PlaybackState.stopped);
+      await pb.resume();
+      expect(pb.state, PlaybackState.stopped);
+    });
+
+    test('pause/resume after completion leave it completed', () async {
+      final pb = SilentPlayback(Duration.zero);
+      await pb.play();
+      await pb.pause();
+      await pb.resume();
+      expect(pb.state, PlaybackState.completed);
+    });
+
     test('pause/resume drive the paused state', () async {
       final pb = SilentPlayback(const Duration(seconds: 10));
       await pb.play();

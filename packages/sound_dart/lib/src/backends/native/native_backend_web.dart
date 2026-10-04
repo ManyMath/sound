@@ -154,7 +154,9 @@ class WebAudioPlayback implements Playback {
   @override
   Future<void> stop() async {
     _stopSource();
-    if (_state == PlaybackState.playing) _state = PlaybackState.stopped;
+    if (_state == PlaybackState.playing || _state == PlaybackState.paused) {
+      _state = PlaybackState.stopped;
+    }
   }
 
   @override
