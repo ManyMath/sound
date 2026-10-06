@@ -18,6 +18,7 @@ import 'sound_source.dart';
 /// ```dart
 /// final playback = await Sound.playFile('chime.wav');
 /// await playback.onComplete;
+/// await playback.dispose();
 /// ```
 class Sound {
   Sound._();

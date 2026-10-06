@@ -399,7 +399,8 @@ class FfiBackend extends SoundBackend implements PcmTap {
 }
 
 /// A single FFI-backed voice. Created idle; [play] starts a native voice and
-/// polls its state to resolve [onComplete].
+/// polls its state to resolve [onComplete]. The native voice is freed as soon
+/// as it ends, keeping its final position and duration.
 class FfiPlayback implements Playback {
   FfiPlayback._(this._backend, this._source, this._volume, this._looping);
 
@@ -411,6 +412,7 @@ class FfiPlayback implements Playback {
   int _voiceId = 0;
   int _rate = 0;
   int _durationFrames = 0;
+  int _positionFrames = 0;
   bool _pauseRequested = false;
   PlaybackState _state = PlaybackState.idle;
   Timer? _poll;
@@ -441,6 +443,7 @@ class FfiPlayback implements Playback {
     _freeVoice();
     if (_completer.isCompleted) _completer = _newCompleter();
     _pauseRequested = false;
+    _positionFrames = 0;
     _voiceId = _start();
     if (_voiceId == 0) {
       _state = PlaybackState.idle;
@@ -531,9 +534,21 @@ class FfiPlayback implements Playback {
     // downloads - so both are re-read every poll rather than once in
     // `play()`. A no-op re-read for the bytes/file sources, whose rate and
     // total are already known up front.
-    _rate = _b.sampleRate(_player, _voiceId);
-    _durationFrames = _b.durationFrames(_player, _voiceId);
+    final rate = _b.sampleRate(_player, _voiceId);
+    final total = _b.durationFrames(_player, _voiceId);
+    if (rate >= 0) _rate = rate;
+    if (total >= 0) _durationFrames = total;
     final native = _b.voiceState(_player, _voiceId);
+    final running =
+        native == _statePlaying ||
+        native == _statePaused ||
+        native == _stateConnecting;
+    if (_state == PlaybackState.stopped) {
+      // stop() was requested: wait for the thread to exit, then free it
+      // without completing onComplete.
+      if (!running) _finish(PlaybackState.stopped);
+      return;
+    }
     switch (native) {
       // The playback thread only notices pause/resume between chunk writes,
       // so its report lags a request; until it catches up, the request wins.
@@ -544,40 +559,37 @@ class FfiPlayback implements Playback {
       case _statePlaying || _statePaused:
         _state = _pauseRequested ? PlaybackState.paused : PlaybackState.playing;
       case _stateCompleted:
-        _finish(PlaybackState.completed, complete: true);
-      case _stateStopped:
-        _finish(PlaybackState.stopped, complete: false);
+        _finish(PlaybackState.completed);
+        if (!_completer.isCompleted) _completer.complete();
       case _stateError:
+        // Read the message before _finish frees the voice it belongs to.
         final msg = _b.voiceError(_player, _voiceId);
-        _finish(PlaybackState.stopped, complete: false);
-        if (!_completer.isCompleted) {
-          _completer.completeError(
-            PlaybackException(
-              msg == nullptr ? 'playback error' : msg.toDartString(),
-            ),
-          );
-        }
+        final error = PlaybackException(
+          msg == nullptr ? 'playback error' : msg.toDartString(),
+        );
+        _finish(PlaybackState.stopped);
+        if (!_completer.isCompleted) _completer.completeError(error);
+      case _stateStopped:
+        _finish(PlaybackState.stopped);
       default: // -1 unknown
-        _finish(PlaybackState.stopped, complete: false);
+        _finish(PlaybackState.stopped);
     }
   }
 
-  void _finish(PlaybackState state, {required bool complete}) {
-    _poll?.cancel();
-    _poll = null;
+  /// Ends the run in [state], keeping the final position, and frees the
+  /// native voice so a handle that is never disposed doesn't hold it.
+  void _finish(PlaybackState state) {
+    _readPosition();
+    _freeVoice();
     _state = state;
-    if (complete && !_completer.isCompleted) _completer.complete();
   }
 
   @override
   Future<void> stop() async {
-    if (_voiceId != 0) {
-      _b.stop(_player, _voiceId);
-      // The poll is cancelled below, so this is the final state.
-      if (_isRunning) _state = PlaybackState.stopped;
-    }
-    _poll?.cancel();
-    _poll = null;
+    if (_voiceId == 0 || !_isRunning) return;
+    _b.stop(_player, _voiceId);
+    // The poll keeps running until the thread exits, then frees the voice.
+    _state = PlaybackState.stopped;
   }
 
   /// Started and not yet ended: the states [stop] moves to stopped.
@@ -630,16 +642,22 @@ class FfiPlayback implements Playback {
 
   @override
   Duration get position {
-    if (_voiceId == 0 || _rate <= 0) return Duration.zero;
-    final frames = _b.position(_player, _voiceId);
-    if (frames < 0) return Duration.zero;
-    return Duration(microseconds: frames * 1000000 ~/ _rate);
+    _readPosition();
+    if (_rate <= 0) return Duration.zero;
+    return Duration(microseconds: _positionFrames * 1000000 ~/ _rate);
   }
 
   @override
   Duration? get duration {
     if (_durationFrames <= 0 || _rate <= 0) return null;
     return Duration(microseconds: _durationFrames * 1000000 ~/ _rate);
+  }
+
+  /// Updates the last known position while the native voice exists.
+  void _readPosition() {
+    if (_voiceId == 0) return;
+    final frames = _b.position(_player, _voiceId);
+    if (frames >= 0) _positionFrames = frames;
   }
 
   void _freeVoice() {

@@ -445,6 +445,43 @@ void main() {
       await pb.dispose();
     });
 
+    test('a finished voice keeps its position and duration', () async {
+      final backend = FfiBackend();
+      Sound.registerBackend(backend, makeActive: true);
+      final pb = await Sound.playBytes(
+        buildSineWav(milliseconds: 120),
+        format: 'wav',
+      );
+      await pb.onComplete.timeout(const Duration(seconds: 5));
+      final duration = pb.duration;
+      expect(duration, isNotNull);
+      expect(pb.position, duration);
+      // The voice was freed on completion, so freeing the player under it
+      // changes nothing the handle reports.
+      await backend.dispose();
+      expect(pb.position, duration);
+      expect(pb.duration, duration);
+      await pb.dispose();
+    });
+
+    test('a stopped voice is freed once its thread exits', () async {
+      final backend = FfiBackend();
+      Sound.registerBackend(backend, makeActive: true);
+      final pb = await Sound.playBytes(
+        buildSineWav(sampleRate: 44100, milliseconds: 2000),
+        format: 'wav',
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      await pb.stop();
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      final at = pb.position;
+      expect(at, greaterThan(Duration.zero));
+      await backend.dispose();
+      expect(pb.position, at);
+      expect(pb.state, PlaybackState.stopped);
+      await pb.dispose();
+    });
+
     test('stop ends playback early', () async {
       Sound.registerBackend(FfiBackend(), makeActive: true);
       final playback = await Sound.playBytes(
