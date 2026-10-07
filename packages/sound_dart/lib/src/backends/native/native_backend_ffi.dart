@@ -257,6 +257,9 @@ class _Bindings {
 class FfiBackend extends SoundBackend implements PcmTap {
   _Bindings? _bindings;
   Pointer<Void> _player = nullptr;
+  // Bumped whenever the player is freed, so playbacks can tell that voice
+  // ids they hold now belong to a different (or no) player.
+  int _generation = 0;
   bool _available = false;
   bool _probed = false;
 
@@ -394,6 +397,7 @@ class FfiBackend extends SoundBackend implements PcmTap {
     if (_player != nullptr) {
       _bindings!.playerFree(_player);
       _player = nullptr;
+      _generation++;
     }
   }
 }
@@ -410,6 +414,7 @@ class FfiPlayback implements Playback {
   double _volume;
   bool _looping;
   int _voiceId = 0;
+  int _voiceGeneration = 0;
   int _rate = 0;
   int _durationFrames = 0;
   int _positionFrames = 0;
@@ -445,6 +450,7 @@ class FfiPlayback implements Playback {
     _pauseRequested = false;
     _positionFrames = 0;
     _voiceId = _start();
+    _voiceGeneration = _backend._generation;
     if (_voiceId == 0) {
       _state = PlaybackState.idle;
       throw PlaybackException('playback failed: ${_backend._lastError()}');
@@ -527,7 +533,7 @@ class FfiPlayback implements Playback {
   }
 
   void _checkState() {
-    if (_voiceId == 0) return;
+    if (!_hasVoice) return;
     // For `UriSource`, the rate is 0 (and duration/position meaningless)
     // until the background thread's first chunk decodes, and frames decoded
     // so far (hence duration) keep growing after that while the stream
@@ -586,7 +592,7 @@ class FfiPlayback implements Playback {
 
   @override
   Future<void> stop() async {
-    if (_voiceId == 0 || !_isRunning) return;
+    if (!_hasVoice || !_isRunning) return;
     _b.stop(_player, _voiceId);
     // The poll keeps running until the thread exits, then frees the voice.
     _state = PlaybackState.stopped;
@@ -601,18 +607,18 @@ class FfiPlayback implements Playback {
   @override
   Future<void> setVolume(double volume) async {
     _volume = volume;
-    if (_voiceId != 0) _b.setVolume(_player, _voiceId, volume);
+    if (_hasVoice) _b.setVolume(_player, _voiceId, volume);
   }
 
   @override
   Future<void> setLooping(bool looping) async {
     _looping = looping;
-    if (_voiceId != 0) _b.setLoop(_player, _voiceId, looping ? 1 : 0);
+    if (_hasVoice) _b.setLoop(_player, _voiceId, looping ? 1 : 0);
   }
 
   @override
   Future<void> pause() async {
-    if (_voiceId == 0) return;
+    if (!_hasVoice) return;
     if (_state != PlaybackState.playing && _state != PlaybackState.connecting) {
       return;
     }
@@ -623,7 +629,7 @@ class FfiPlayback implements Playback {
 
   @override
   Future<void> resume() async {
-    if (_voiceId == 0 || _state != PlaybackState.paused) return;
+    if (!_hasVoice || _state != PlaybackState.paused) return;
     _b.resume(_player, _voiceId);
     _pauseRequested = false;
     _state = _rate > 0 ? PlaybackState.playing : PlaybackState.connecting;
@@ -634,7 +640,7 @@ class FfiPlayback implements Playback {
     // _rate is 0 while a URL voice is still connecting (the stream's rate is
     // unknown until the first chunk decodes), so a seek during that window is
     // a no-op rather than a guess at the frame index.
-    if (_voiceId != 0 && _rate > 0) {
+    if (_hasVoice && _rate > 0) {
       final frame = position.inMicroseconds * _rate ~/ 1000000;
       _b.seek(_player, _voiceId, frame < 0 ? 0 : frame);
     }
@@ -653,9 +659,22 @@ class FfiPlayback implements Playback {
     return Duration(microseconds: _durationFrames * 1000000 ~/ _rate);
   }
 
+  /// Whether this handle still has a native voice. After the backend frees
+  /// its player the id is dropped instead of used: it is meaningless, or
+  /// once a new player is created, names another playback's voice.
+  bool get _hasVoice {
+    if (_voiceId != 0 && _voiceGeneration != _backend._generation) {
+      _voiceId = 0;
+      _poll?.cancel();
+      _poll = null;
+      if (_isRunning) _state = PlaybackState.stopped;
+    }
+    return _voiceId != 0;
+  }
+
   /// Updates the last known position while the native voice exists.
   void _readPosition() {
-    if (_voiceId == 0) return;
+    if (!_hasVoice) return;
     final frames = _b.position(_player, _voiceId);
     if (frames >= 0) _positionFrames = frames;
   }
@@ -663,7 +682,7 @@ class FfiPlayback implements Playback {
   void _freeVoice() {
     _poll?.cancel();
     _poll = null;
-    if (_voiceId != 0) {
+    if (_hasVoice) {
       _b.voiceFree(_player, _voiceId);
       _voiceId = 0;
     }

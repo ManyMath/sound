@@ -482,6 +482,28 @@ void main() {
       await pb.dispose();
     });
 
+    test('a handle outliving its player leaves newer voices alone', () async {
+      final backend = FfiBackend();
+      Sound.registerBackend(backend, makeActive: true);
+      final old = await Sound.playBytes(
+        buildSineWav(milliseconds: 3000),
+        format: 'wav',
+      );
+      await backend.dispose();
+      // Loading again creates a new player, whose voice ids start over.
+      final fresh = await Sound.playBytes(
+        buildSineWav(milliseconds: 3000),
+        format: 'wav',
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      expect(old.state, PlaybackState.stopped);
+      await old.stop();
+      await old.dispose();
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      expect(fresh.state, PlaybackState.playing);
+      await fresh.dispose();
+    });
+
     test('stop ends playback early', () async {
       Sound.registerBackend(FfiBackend(), makeActive: true);
       final playback = await Sound.playBytes(
