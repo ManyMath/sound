@@ -7,11 +7,17 @@ import 'package:test/test.dart';
 /// A backend whose availability and priority are configurable, for exercising
 /// selection logic.
 class _ProbeBackend extends SoundBackend {
-  _ProbeBackend(this.name, {this.available = true, this.priority = 0});
+  _ProbeBackend(
+    this.name, {
+    this.available = true,
+    this.priority = 0,
+    this.failInit = false,
+  });
 
   @override
   final String name;
   final bool available;
+  final bool failInit;
   @override
   final int priority;
 
@@ -21,7 +27,10 @@ class _ProbeBackend extends SoundBackend {
   bool get isAvailable => available;
 
   @override
-  Future<void> initialize() async => initializeCalls++;
+  Future<void> initialize() async {
+    initializeCalls++;
+    if (failInit) throw const PlaybackException('no audio device');
+  }
 
   @override
   Future<Playback> load(
@@ -120,6 +129,30 @@ void main() {
       await Sound.playBytes(Uint8List(0));
       await Sound.playBytes(Uint8List(0));
       expect(probe.initializeCalls, 1);
+    });
+  });
+
+  group('initialization failure', () {
+    test('skips an auto-selected backend that fails to initialize', () async {
+      final broken = _ProbeBackend('broken', priority: 9000, failInit: true);
+      Sound.registerBackend(broken);
+      Sound.registerBackend(_ProbeBackend('usable', priority: 8000));
+      await Sound.playBytes(Uint8List(0));
+      expect(Sound.backend.name, 'usable');
+      await Sound.playBytes(Uint8List(0));
+      expect(broken.initializeCalls, 1);
+    });
+
+    test('rethrows when a pinned backend fails to initialize', () async {
+      Sound.registerBackend(
+        _ProbeBackend('broken', priority: 1, failInit: true),
+        makeActive: true,
+      );
+      await expectLater(
+        Sound.playBytes(Uint8List(0)),
+        throwsA(isA<PlaybackException>()),
+      );
+      expect(Sound.backend.name, 'broken');
     });
   });
 

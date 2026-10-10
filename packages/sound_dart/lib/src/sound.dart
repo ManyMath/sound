@@ -13,7 +13,9 @@ import 'sound_source.dart';
 /// `sound_dart` keeps a registry of [SoundBackend]s and picks the best available one
 /// for the current environment (highest [SoundBackend.priority] among those
 /// whose [SoundBackend.isAvailable] is true). Apps can register extra backends
-/// or pin a specific one.
+/// or pin a specific one. If an automatically selected backend fails to
+/// initialize, it is skipped and the next best one is used; a pinned
+/// backend's failure is rethrown instead.
 ///
 /// ```dart
 /// final playback = await Sound.playFile('chime.wav');
@@ -25,6 +27,8 @@ class Sound {
 
   static final List<SoundBackend> _backends = [];
   static final Set<SoundBackend> _initialized = Set.identity();
+  // Auto-selected backends whose initialize() threw; selection skips them.
+  static final Set<SoundBackend> _failed = Set.identity();
   static SoundBackend? _active;
   // Set when _active was chosen explicitly rather than by priority.
   static bool _pinned = false;
@@ -94,8 +98,9 @@ class Sound {
   }
 
   static SoundBackend _select() {
-    final available = _backends.where((b) => b.isAvailable).toList()
-      ..sort((a, b) => b.priority.compareTo(a.priority));
+    final available =
+        _backends.where((b) => b.isAvailable && !_failed.contains(b)).toList()
+          ..sort((a, b) => b.priority.compareTo(a.priority));
     if (available.isEmpty) throw const NoBackendAvailableException();
     return available.first;
   }
@@ -109,12 +114,26 @@ class Sound {
     double volume = 1.0,
     bool loop = false,
   }) async {
-    final b = backend;
-    if (!_initialized.contains(b)) {
-      await b.initialize();
-      _initialized.add(b);
-    }
+    final b = await _ready();
     return b.load(source, volume: volume, loop: loop);
+  }
+
+  /// The active backend, initialized, falling back past auto-selected
+  /// backends whose initialize() throws.
+  static Future<SoundBackend> _ready() async {
+    while (true) {
+      final b = backend;
+      if (_initialized.contains(b)) return b;
+      try {
+        await b.initialize();
+        _initialized.add(b);
+        return b;
+      } on Exception {
+        if (_pinned && identical(_active, b)) rethrow;
+        _failed.add(b);
+        if (identical(_active, b)) _active = null;
+      }
+    }
   }
 
   /// Loads and immediately starts [source].
@@ -245,6 +264,7 @@ class Sound {
       await b.dispose();
     }
     _initialized.clear();
+    _failed.clear();
     _backends.clear();
     _active = null;
     _pinned = false;
