@@ -26,6 +26,8 @@ class Sound {
   static final List<SoundBackend> _backends = [];
   static final Set<SoundBackend> _initialized = Set.identity();
   static SoundBackend? _active;
+  // Set when _active was chosen explicitly rather than by priority.
+  static bool _pinned = false;
   static bool _defaultsRegistered = false;
 
   /// Registers the backends that ship with `sound_dart`.
@@ -51,14 +53,17 @@ class Sound {
 
   /// Adds [backend] to the registry.
   ///
-  /// Pass [makeActive] to select it immediately regardless of priority.
-  /// Re-registering an instance is a no-op.
+  /// Pass [makeActive] to select it immediately regardless of priority; a
+  /// backend selected that way (or with [useBackend]) stays active when
+  /// others are registered later. Re-registering an instance is a no-op.
   static void registerBackend(SoundBackend backend, {bool makeActive = false}) {
     _ensureDefaults();
-    if (!_backends.contains(backend)) _backends.add(backend);
+    final added = !_backends.contains(backend);
+    if (added) _backends.add(backend);
     if (makeActive) {
       _active = backend;
-    } else {
+      _pinned = true;
+    } else if (added && !_pinned) {
       // Force re-selection so a newly added, higher-priority backend wins.
       _active = null;
     }
@@ -85,6 +90,7 @@ class Sound {
       );
     }
     _active = match.first;
+    _pinned = true;
   }
 
   static SoundBackend _select() {
@@ -241,6 +247,7 @@ class Sound {
     _initialized.clear();
     _backends.clear();
     _active = null;
+    _pinned = false;
     _defaultsRegistered = false;
   }
 }

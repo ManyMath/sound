@@ -74,6 +74,20 @@ void main() {
       expect(Sound.backend.name, 'low');
     });
 
+    test('re-registering a pinned backend keeps it pinned', () {
+      Sound.registerBackend(_ProbeBackend('high', priority: 9000));
+      final silent = SilentBackend();
+      Sound.registerBackend(silent, makeActive: true);
+      Sound.registerBackend(silent);
+      expect(Sound.backend, same(silent));
+    });
+
+    test('a pin survives later registrations', () {
+      Sound.useBackend('silent');
+      Sound.registerBackend(_ProbeBackend('better', priority: 9000));
+      expect(Sound.backend.name, 'silent');
+    });
+
     test('useBackend pins by name and throws on unknown', () {
       Sound.registerBackend(_ProbeBackend('a', priority: 1));
       Sound.registerBackend(_ProbeBackend('b', priority: 2));
