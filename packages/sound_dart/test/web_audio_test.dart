@@ -94,6 +94,20 @@ void main() {
     await pb.dispose();
   });
 
+  test('undecodable bytes throw an UnsupportedSourceException', () async {
+    await expectLater(
+      Sound.load(SoundSource.bytes(Uint8List(64))),
+      throwsA(isA<UnsupportedSourceException>()),
+    );
+  });
+
+  test('a failed fetch throws a PlaybackException', () async {
+    await expectLater(
+      Sound.load(SoundSource.uri(Uri.parse('http://127.0.0.1:1/tone.wav'))),
+      throwsA(isA<PlaybackException>()),
+    );
+  });
+
   test('an onComplete taken before play() completes', () async {
     final pb = await Sound.load(SoundSource.bytes(toneWav(), format: 'wav'));
     final done = pb.onComplete;

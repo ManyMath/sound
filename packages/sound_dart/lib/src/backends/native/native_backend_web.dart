@@ -55,7 +55,13 @@ class WebAudioBackend extends SoundBackend {
     };
     // decodeAudioData detaches its input, so hand it a private copy.
     final copy = Uint8List.fromList(bytes);
-    final buffer = await _context!.decodeAudioData(copy.buffer.toJS).toDart;
+    final web.AudioBuffer buffer;
+    try {
+      buffer = await _context!.decodeAudioData(copy.buffer.toJS).toDart;
+    } on Object catch (e) {
+      // The browser rejects with a DOMException (EncodingError).
+      throw UnsupportedSourceException('could not decode audio: $e');
+    }
     return WebAudioPlayback(_context!, buffer, volume, loop);
   }
 
@@ -65,10 +71,15 @@ class WebAudioBackend extends SoundBackend {
     _context = null;
   }
 
-  /// Fetches `uri` with `headers` (e.g. an auth token), throwing on a
-  /// non-2xx response.
+  /// Fetches `uri` with `headers` (e.g. an auth token), throwing a
+  /// [PlaybackException] on a network failure or non-2xx response.
   Future<Uint8List> _fetch(Uri uri, Map<String, String> headers) async {
-    final response = await http.get(uri, headers: headers);
+    final http.Response response;
+    try {
+      response = await http.get(uri, headers: headers);
+    } on http.ClientException catch (e) {
+      throw PlaybackException('fetching $uri failed: ${e.message}');
+    }
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw PlaybackException(
         'fetching $uri failed: HTTP ${response.statusCode}',
