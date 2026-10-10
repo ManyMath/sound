@@ -170,6 +170,12 @@ class WebAudioPlayback implements Playback {
 
   @override
   Future<void> setLooping(bool looping) async {
+    if (_state == PlaybackState.playing && looping != _looping) {
+      // Re-anchor at the current spot so position stays right after the
+      // wrap-around in [position] switches on or off.
+      _offset = position.inMicroseconds / 1e6;
+      _startedAt = _context.currentTime.toDouble();
+    }
     _looping = looping;
     _source?.loop = looping;
   }
@@ -202,10 +208,13 @@ class WebAudioPlayback implements Playback {
 
   @override
   Duration get position {
-    final seconds = _state == PlaybackState.playing
+    final length = _buffer.duration;
+    var seconds = _state == PlaybackState.playing
         ? _offset + (_context.currentTime.toDouble() - _startedAt)
         : _offset;
-    final clamped = seconds.clamp(0, _buffer.duration);
+    // A looping source wraps back to the start each time it reaches the end.
+    if (_looping && length > 0) seconds %= length;
+    final clamped = seconds.clamp(0, length);
     return Duration(microseconds: (clamped * 1e6).round());
   }
 

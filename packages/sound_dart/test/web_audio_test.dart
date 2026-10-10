@@ -74,6 +74,26 @@ void main() {
     await pb.dispose();
   });
 
+  test('a looping voice reports its position within the clip', () async {
+    final pb = await Sound.play(
+      SoundSource.bytes(toneWav(), format: 'wav'),
+      loop: true,
+    );
+    final duration = pb.duration!;
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+    expect(pb.position, lessThan(duration));
+    await pb.pause();
+    final at = pb.position;
+    expect(at, lessThan(duration));
+    await pb.resume();
+    expect((pb.position - at).inMilliseconds.abs(), lessThan(50));
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    await pb.setLooping(false);
+    expect(pb.position, lessThan(duration));
+    await pb.onComplete.timeout(const Duration(seconds: 1));
+    await pb.dispose();
+  });
+
   test('an onComplete taken before play() completes', () async {
     final pb = await Sound.load(SoundSource.bytes(toneWav(), format: 'wav'));
     final done = pb.onComplete;
