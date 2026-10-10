@@ -1,11 +1,14 @@
 @TestOn('browser')
 library;
 
+import 'dart:js_interop';
 import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:sound_dart/sound_dart.dart';
+import 'package:sound_dart/src/backends/native/native_backend_web.dart';
 import 'package:test/test.dart';
+import 'package:web/web.dart' as web;
 
 /// Builds a 16-bit mono PCM WAV of a quiet tone.
 Uint8List toneWav({int sampleRate = 8000, int milliseconds = 200}) {
@@ -57,6 +60,18 @@ void main() {
 
   test('selects the WebAudio backend', () {
     expect(Sound.backend.name, 'webaudio');
+  });
+
+  test('play() resumes a suspended AudioContext', () async {
+    final context = web.AudioContext();
+    addTearDown(() => context.close().toDart);
+    await context.suspend().toDart;
+    final buffer = await context.decodeAudioData(toneWav().buffer.toJS).toDart;
+    final pb = WebAudioPlayback(context, buffer, 1.0, false);
+    await pb.play();
+    await pb.onComplete.timeout(const Duration(seconds: 3));
+    expect(context.state, 'running');
+    await pb.dispose();
   });
 
   test('an onComplete taken before play() completes', () async {

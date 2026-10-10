@@ -122,6 +122,10 @@ class WebAudioPlayback implements Playback {
   /// (Re)starts a buffer source playing from [offset] seconds.
   void _startSource(double offset) {
     _stopSource();
+    // A context created before any user gesture starts suspended and stays
+    // so until resumed. Not awaited: the browser may hold the promise until
+    // a gesture, and a source started meanwhile plays once it runs.
+    if (_context.state == 'suspended') _context.resume().toDart.ignore();
     _offset = offset.clamp(0, _buffer.duration);
     _startedAt = _context.currentTime.toDouble();
     final source = web.AudioBufferSourceNode(_context)
