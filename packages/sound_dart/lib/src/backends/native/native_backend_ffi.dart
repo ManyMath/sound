@@ -14,7 +14,7 @@ import '../../sound_source.dart';
 /// The default native backend on platforms with `dart:ffi`.
 SoundBackend? createNativeBackend() => FfiBackend();
 
-// --- C ABI signatures, mirroring native/sound_cli/src/lib.rs -------------
+// --- C ABI signatures, mirroring packages/sound_flutter/rust/src/lib.rs ---
 
 typedef _PlayerNewNative = Pointer<Void> Function();
 typedef _PlayerFreeNative = Void Function(Pointer<Void>);
@@ -61,7 +61,8 @@ typedef _VoiceErrorNative = Pointer<Utf8> Function(Pointer<Void>, Uint64);
 typedef _VoiceError = Pointer<Utf8> Function(Pointer<Void>, int);
 typedef _LastErrorNative = Pointer<Utf8> Function();
 typedef _LastError = Pointer<Utf8> Function();
-// Decode-to-PCM (the PCM tap), mirroring native/sound_cli/src/lib.rs.
+// Decode-to-PCM (the PCM tap), mirroring
+// packages/sound_flutter/rust/src/lib.rs.
 typedef _DecodeBytesNative =
     Pointer<Void> Function(Pointer<Uint8>, Size, Pointer<Utf8>);
 typedef _DecodeBytes =
@@ -146,7 +147,7 @@ class NativeLibrary {
     var dir = Directory.current.absolute;
     for (var i = 0; i < 6; i++) {
       for (final profile in ['release', 'debug']) {
-        yield '${dir.path}/native/sound_cli/target/$profile/$_fileName';
+        yield '${dir.path}/packages/sound_flutter/rust/target/$profile/$_fileName';
       }
       final parent = dir.parent;
       if (parent.path == dir.path) break;

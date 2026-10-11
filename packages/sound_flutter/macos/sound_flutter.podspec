@@ -17,11 +17,11 @@ sound_flutter plugin for use over FFI.
   s.source           = { :path => '.' }
   s.source_files     = 'Classes/**/*'
 
-  # Build the shared `sound_cli` Rust crate (static lib) via cargokit and
+  # Build the `sound_cli` Rust crate in ../rust (static lib) via cargokit and
   # force-link it into the plugin framework.
   s.script_phase = {
     :name => 'Build sound_cli',
-    :script => 'sh "$PODS_TARGET_SRCROOT/../cargokit/build_pod.sh" ../../../native/sound_cli sound_cli',
+    :script => 'sh "$PODS_TARGET_SRCROOT/../cargokit/build_pod.sh" ../rust sound_cli',
     :execution_position => :before_compile,
     :input_files => ['${BUILT_PRODUCTS_DIR}/cargokit_phony'],
     :output_files => ['${BUILT_PRODUCTS_DIR}/libsound_cli.a'],

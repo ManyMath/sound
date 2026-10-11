@@ -37,7 +37,7 @@ melos:
       run: dart test packages/sound_dart && flutter test packages/sound_flutter/test
     native:build:
       description: Build the sound_cli shared library (for CLI/dev use).
-      run: cargo build --manifest-path native/sound_cli/Cargo.toml
+      run: cargo build --manifest-path packages/sound_flutter/rust/Cargo.toml
     native:test:
       description: Run the Rust crate tests.
-      run: cargo test --manifest-path native/sound_cli/Cargo.toml
+      run: cargo test --manifest-path packages/sound_flutter/rust/Cargo.toml

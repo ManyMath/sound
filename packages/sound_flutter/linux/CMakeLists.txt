@@ -8,9 +8,8 @@ project(${PROJECT_NAME} LANGUAGES CXX)
 include("${CMAKE_CURRENT_SOURCE_DIR}/../cargokit/cmake/cargokit.cmake")
 
 # apply_cargokit(<target> <manifest_dir, relative to this file> <lib_name> <force-link symbol>)
-# The crate lives at the repo root, shared with the pure-Dart `sound_dart`
-# package.
-apply_cargokit(${PROJECT_NAME} ../../../native/sound_cli sound_cli "")
+# The crate lives in ../rust so it ships with the published package.
+apply_cargokit(${PROJECT_NAME} ../rust sound_cli "")
 
 set(sound_flutter_bundled_libraries
   "${${PROJECT_NAME}_cargokit_lib}"

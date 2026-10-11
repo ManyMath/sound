@@ -10,7 +10,7 @@ project(${PROJECT_NAME} LANGUAGES CXX)
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/../cargokit/cmake/cargokit.cmake")
 
-apply_cargokit(${PROJECT_NAME} ../../../native/sound_cli sound_cli sound_player_new)
+apply_cargokit(${PROJECT_NAME} ../rust sound_cli sound_player_new)
 
 set(sound_flutter_bundled_libraries
   "${${PROJECT_NAME}_cargokit_lib}"
