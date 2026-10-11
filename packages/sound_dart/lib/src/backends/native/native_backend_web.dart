@@ -93,9 +93,13 @@ class WebAudioBackend extends SoundBackend {
 class WebAudioPlayback implements Playback {
   WebAudioPlayback(this._context, this._buffer, double volume, this._looping)
     : _gain = _context.createGain() {
-    _gain.gain.value = volume;
+    _gain.gain.value = _gainFor(volume);
     _gain.connect(_context.destination);
   }
+
+  // A negative gain would invert the waveform rather than silence it, and
+  // the AudioParam rejects NaN; both clamp to 0 like the native backend.
+  static double _gainFor(double volume) => volume > 0 ? volume : 0.0;
 
   final web.AudioContext _context;
   final web.AudioBuffer _buffer;
@@ -176,7 +180,7 @@ class WebAudioPlayback implements Playback {
 
   @override
   Future<void> setVolume(double volume) async {
-    _gain.gain.value = volume;
+    _gain.gain.value = _gainFor(volume);
   }
 
   @override

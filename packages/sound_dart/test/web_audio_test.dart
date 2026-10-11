@@ -108,6 +108,16 @@ void main() {
     );
   });
 
+  test('volumes below zero or NaN clamp to silence', () async {
+    final pb = await Sound.load(
+      SoundSource.bytes(toneWav(), format: 'wav'),
+      volume: -1,
+    );
+    await pb.setVolume(-0.5);
+    await pb.setVolume(double.nan);
+    await pb.dispose();
+  });
+
   test('an onComplete taken before play() completes', () async {
     final pb = await Sound.load(SoundSource.bytes(toneWav(), format: 'wav'));
     final done = pb.onComplete;
