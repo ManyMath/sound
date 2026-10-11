@@ -33,5 +33,7 @@ only.
 
 ## Requirements
 
-- Android: `minSdk` 26 or higher (the AAudio backend needs API 26).
+- Android: playback uses AAudio, available from Android 8.0 (API 26). The
+  plugin builds with Flutter's default `minSdk`; on older devices playback
+  falls back to the silent backend.
 - iOS 13 or later; macOS 10.15 or later.

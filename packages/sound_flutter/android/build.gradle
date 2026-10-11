@@ -43,8 +43,11 @@ android {
     }
 
     defaultConfig {
-        // AAudio (used by sound_cli for output) requires API 26+.
-        minSdk = 26
+        // AAudio (used by sound_cli for output) needs API 26+, but the native
+        // library loads it at runtime, so nothing here needs 26 to build.
+        // Matching Flutter's default lets apps build without raising their
+        // minSdk; on older devices playback falls back to the silent backend.
+        minSdk = 24
     }
 }
 

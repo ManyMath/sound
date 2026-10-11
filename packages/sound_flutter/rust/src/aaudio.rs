@@ -52,8 +52,9 @@ unsafe impl Sync for Aaudio {}
 impl Aaudio {
     pub fn load() -> Result<Aaudio, String> {
         unsafe {
-            let lib = Library::new("libaaudio.so")
-                .map_err(|e| format!("failed to load libaaudio.so: {e}"))?;
+            let lib = Library::new("libaaudio.so").map_err(|e| {
+                format!("AAudio is unavailable (it needs Android 8.0, API 26, or newer): {e}")
+            })?;
             macro_rules! sym {
                 ($name:literal) => {
                     *lib.get($name).map_err(|e| {
