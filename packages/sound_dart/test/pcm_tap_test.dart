@@ -1,6 +1,7 @@
 @TestOn('vm')
 library;
 
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:sound_dart/sound_dart.dart';
@@ -129,6 +130,23 @@ void main() {
       await s.stop();
       await sub.cancel();
       expect(total, greaterThan(200)); // more than one pass through the buffer
+    });
+
+    test('stop closes frames without completing onDone', () async {
+      pin(duration: const Duration(seconds: 1));
+      final s = await Sound.openPcmStream(
+        SoundSource.bytes(Uint8List(0)),
+        chunkFrames: 100,
+      );
+      var natural = false;
+      unawaited(s.onDone.then((_) => natural = true));
+      final closed = Completer<void>();
+      s.frames.listen(null, onDone: closed.complete);
+      await s.start();
+      await s.stop();
+      await closed.future.timeout(const Duration(seconds: 1));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(natural, isFalse);
     });
 
     test('openPcmStream records the source on the silent backend', () async {

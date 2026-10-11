@@ -85,6 +85,8 @@ class PcmStream {
   Stream<Int16List> get frames => _controller.stream;
 
   /// Completes when the stream finishes on its own (not via [stop]/[dispose]).
+  ///
+  /// [frames] closes either way; listen for its done event to observe both.
   Future<void> get onDone => _onDone.future;
 
   /// Begins emitting frames. Idempotent.
@@ -136,7 +138,6 @@ class PcmStream {
     _timer?.cancel();
     _timer = null;
     if (!_controller.isClosed) await _controller.close();
-    if (!_onDone.isCompleted) _onDone.complete();
   }
 
   /// Releases the stream. The handle is unusable afterward.
