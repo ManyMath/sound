@@ -1,7 +1,7 @@
 // Plays audio from the command line using `sound_dart` (pure Dart, no Flutter).
 //
 // Build the native library first:
-//   cargo build --manifest-path native/sound_cli/Cargo.toml
+//   cargo build --manifest-path packages/sound_flutter/rust/Cargo.toml
 // then, from the repo root:
 //   dart run packages/sound_dart/example/sound_example.dart           # a 440 Hz tone
 //   dart run packages/sound_dart/example/sound_example.dart chime.wav # a WAV file

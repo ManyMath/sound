@@ -24,10 +24,11 @@ Outside Flutter, nothing builds the native library for you. Build the
 `sound_cli` crate from [the repository](https://github.com/ManyMath/sound):
 
 ```sh
-cargo build --release --manifest-path native/sound_cli/Cargo.toml
+cargo build --release --manifest-path packages/sound_flutter/rust/Cargo.toml
 ```
 
 and point `SOUND_DART_LIB` at the result (`libsound_cli.so`,
 `libsound_cli.dylib`, or `sound_cli.dll` under
-`native/sound_cli/target/release/`). Running from inside the repository finds
-it automatically. Without the library, `Sound` falls back to a silent backend.
+`packages/sound_flutter/rust/target/release/`). Running from inside the
+repository finds it automatically. Without the library, `Sound` falls back to
+a silent backend.

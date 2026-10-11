@@ -3,9 +3,9 @@
 Flutter integration for [`sound_dart`](https://pub.dev/packages/sound_dart):
 cross-platform audio with no system dependencies for users or devs to install.
 
-This package builds the shared `sound_cli` Rust crate automatically (via
-[cargokit](https://github.com/ManyMath/cargokit)) and bundles it with your app,
-then re-exports the full `sound_dart` API.
+This package builds the `sound_cli` Rust crate it ships in `rust/`
+automatically (via [cargokit](https://github.com/ManyMath/cargokit)) and
+bundles it with your app, then re-exports the full `sound_dart` API.
 
 ```dart
 import 'package:sound_flutter/sound_flutter.dart';
@@ -18,7 +18,7 @@ await playback.onComplete;
 Building requires Rust (`rustup`). To remove even that for consumers, the repo
 is set up for cargokit precompiled binaries:
 
-- `native/sound_cli/cargokit.yaml` holds the public signing key and the
+- `rust/cargokit.yaml` holds the public signing key and the
   release URL prefix.
 - `.github/workflows/precompile.yml` builds and uploads signed binaries to
   `precompiled_<crate-hash>` releases on tag pushes. It needs a

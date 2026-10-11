@@ -10,7 +10,7 @@ This is a [melos](https://melos.invertase.dev) monorepo:
 |---|---|
 | [`packages/sound_dart`](packages/sound_dart) | Pure Dart (no Flutter); works in CLI tools. Reaches native audio over `dart:ffi`, with a pluggable backend registry. |
 | [`packages/sound_flutter`](packages/sound_flutter) | Flutter plugin. Builds the native library automatically (via cargokit) and re-exports the `sound_dart` API. |
-| [`native/sound_cli`](native/sound_cli) | Rust crate (the C ABI behind the FFI backend). Decodes WAV/MP3/OGG/FLAC and plays with no system deps - loads the OS audio library at runtime: `libasound.so.2` on Linux, `libaaudio.so` on Android, AudioToolbox on macOS/iOS, `winmm.dll` on Windows. |
+| [`packages/sound_flutter/rust`](packages/sound_flutter/rust) | The `sound_cli` Rust crate (the C ABI behind the FFI backend), kept inside `sound_flutter` so it ships with that package. Decodes WAV/MP3/OGG/FLAC and plays with no system deps - loads the OS audio library at runtime: `libasound.so.2` on Linux, `libaaudio.so` on Android, AudioToolbox on macOS/iOS, `winmm.dll` on Windows. |
 
 ## Quick start (Dart CLI)
 
@@ -21,7 +21,7 @@ final playback = await Sound.playFile('chime.wav', volume: 0.8);
 await playback.onComplete;
 ```
 
-Build the native library first: `cargo build --manifest-path native/sound_cli/Cargo.toml`.
+Build the native library first: `cargo build --manifest-path packages/sound_flutter/rust/Cargo.toml`.
 
 ## Status
 
