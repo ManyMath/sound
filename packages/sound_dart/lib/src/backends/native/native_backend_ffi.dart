@@ -507,10 +507,11 @@ class FfiPlayback implements Playback {
             names[i] = name;
             values[i] = value;
           }
-          // The native side either fails synchronously (bad URL/unsupported
-          // format) or spawns background fetch/decode threads before
+          // The native side copies the URL, headers and hint before
           // returning, so the request buffers are safe to free immediately
-          // afterward either way.
+          // afterward. It only returns 0 for null or non-UTF-8 arguments; a
+          // bad URL, HTTP failure or unsupported format surfaces later as
+          // the voice's error state, from its background thread.
           return _b.playUrl(
             _player,
             cUrl,
