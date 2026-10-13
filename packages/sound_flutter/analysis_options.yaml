@@ -4,6 +4,12 @@ analyzer:
   exclude:
     # Vendored build tooling with its own (separately analyzed) sources.
     - cargokit/**
+    - build/**
+    - android/**
+    - ios/**
+    - windows/**
+    - macos/**
+    - linux/**
 
 # Additional information about this file can be found at
 # https://dart.dev/guides/language/analysis-options
