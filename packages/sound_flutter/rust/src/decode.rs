@@ -25,6 +25,14 @@ pub struct DecodedAudio {
     pub rate: u32,
 }
 
+/// Most interleaved samples a single decode may produce: 512 MiB of S16, or
+/// about 50 minutes of 44.1 kHz stereo. Compressed audio can expand by
+/// orders of magnitude, so input size alone does not bound memory use.
+pub const MAX_DECODED_SAMPLES: usize = 1 << 28;
+
+/// The error reported when decoding passes [MAX_DECODED_SAMPLES].
+pub const DECODED_LIMIT_ERROR: &str = "decoded audio exceeds the 512 MiB limit";
+
 /// Decodes encoded audio [bytes] (format auto-detected) into interleaved S16LE.
 ///
 /// [format_hint] is an optional file extension (e.g. `mp3`) that helps the
@@ -46,9 +54,22 @@ pub fn decode_file(path: &str) -> Result<DecodedAudio, String> {
 /// Fully decodes whatever [StreamDecoder] yields into one buffer. Used by the
 /// bytes/file entry points, which have no reason to play incrementally since
 /// their whole input is already available locally.
-fn decode_all(mut decoder: StreamDecoder) -> Result<DecodedAudio, String> {
+fn decode_all(decoder: StreamDecoder) -> Result<DecodedAudio, String> {
+    decode_all_limited(decoder, MAX_DECODED_SAMPLES)
+}
+
+/// [decode_all] with the sample cap as a parameter. The cap is checked before
+/// each chunk is appended, so an oversized input fails without first
+/// allocating its full decoded size.
+fn decode_all_limited(
+    mut decoder: StreamDecoder,
+    max_samples: usize,
+) -> Result<DecodedAudio, String> {
     let mut samples = Vec::new();
     while let Some(chunk) = decoder.next_chunk()? {
+        if chunk.len() > max_samples - samples.len() {
+            return Err(DECODED_LIMIT_ERROR.to_string());
+        }
         samples.extend_from_slice(&chunk);
     }
     if decoder.channels == 0 || decoder.rate == 0 {
@@ -357,6 +378,20 @@ mod tests {
         assert_eq!(audio.channels, 1);
         // ~16000/32767 scaled back to ~16000.
         assert!(audio.samples.iter().all(|&s| (s as i32 - 16_000).abs() < 8));
+    }
+
+    #[test]
+    fn decode_cap_rejects_oversized_audio() {
+        let wav = const_wav(1, 8_000, 16, SampleFormat::Int, 1000, 7);
+        let open = || {
+            let mss =
+                MediaSourceStream::new(Box::new(Cursor::new(wav.clone())), Default::default());
+            StreamDecoder::open(mss, Some("wav")).unwrap()
+        };
+        let err = decode_all_limited(open(), 999).err().unwrap();
+        assert_eq!(err, DECODED_LIMIT_ERROR);
+        let audio = decode_all_limited(open(), 1000).unwrap();
+        assert_eq!(audio.samples.len(), 1000);
     }
 
     #[test]

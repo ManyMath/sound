@@ -611,6 +611,7 @@ fn run_voice_url<S: PcmSink>(
         decoder,
         live.clone(),
         channels,
+        first_chunk.len(),
         total_frames,
         sh.stop.clone(),
     );
@@ -634,6 +635,8 @@ impl Drop for SetOnDrop<'_> {
 
 /// Decodes the rest of `decoder`'s stream on a background thread, pushing
 /// each chunk into `live` and growing `total_frames` as frames become known.
+/// `already_decoded` counts samples decoded before the call; the total is
+/// capped at [decode::MAX_DECODED_SAMPLES].
 /// Runs independently of the playback thread, which only ever reads `live`.
 /// Exits when the stream ends, decoding fails, or `stop` is set (so a
 /// stopped/freed voice does not keep decoding -- and, via the decoder's
@@ -642,17 +645,24 @@ fn spawn_decode_feeder(
     mut decoder: StreamDecoder,
     live: Arc<LiveBuffer>,
     channels: u32,
+    already_decoded: usize,
     total_frames: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
 ) {
     std::thread::spawn(move || {
         let channels = channels.max(1) as u64;
+        let mut decoded = already_decoded;
         let fed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| loop {
             if stop.load(Ordering::SeqCst) {
                 return None;
             }
             match decoder.next_chunk() {
                 Ok(Some(chunk)) => {
+                    // Samples already pushed still play before this is reported.
+                    if chunk.len() > decode::MAX_DECODED_SAMPLES.saturating_sub(decoded) {
+                        return Some(decode::DECODED_LIMIT_ERROR.to_string());
+                    }
+                    decoded += chunk.len();
                     live.push(&chunk);
                     total_frames.fetch_add(chunk.len() as u64 / channels, Ordering::SeqCst);
                 }
