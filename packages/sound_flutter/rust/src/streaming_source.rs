@@ -21,6 +21,11 @@ use symphonia::core::io::MediaSource;
 
 use crate::net;
 
+/// Most bytes of response body buffered; past this the fetch fails.
+const MAX_DOWNLOAD_BYTES: u64 = 256 << 20;
+
+const DOWNLOAD_LIMIT_ERROR: &str = "download exceeds the 256 MiB limit";
+
 struct Shared {
     /// Bytes downloaded so far, in order from the start of the response.
     buf: Vec<u8>,
@@ -58,6 +63,16 @@ impl StreamingSource {
         headers: Vec<(String, String)>,
         stop: Arc<AtomicBool>,
     ) -> StreamingSource {
+        Self::fetch_limited(url, headers, stop, MAX_DOWNLOAD_BYTES)
+    }
+
+    /// [Self::fetch] with the download cap as a parameter.
+    fn fetch_limited(
+        url: String,
+        headers: Vec<(String, String)>,
+        stop: Arc<AtomicBool>,
+        max_bytes: u64,
+    ) -> StreamingSource {
         let shared = Arc::new((
             Mutex::new(Shared {
                 buf: Vec::new(),
@@ -71,7 +86,16 @@ impl StreamingSource {
         let worker_shared = shared.clone();
         let worker_stop = stop.clone();
         let worker_dropped = dropped.clone();
-        thread::spawn(move || Self::run(url, headers, worker_shared, worker_stop, worker_dropped));
+        thread::spawn(move || {
+            Self::run(
+                url,
+                headers,
+                max_bytes,
+                worker_shared,
+                worker_stop,
+                worker_dropped,
+            )
+        });
         StreamingSource {
             shared,
             pos: 0,
@@ -83,6 +107,7 @@ impl StreamingSource {
     fn run(
         url: String,
         headers: Vec<(String, String)>,
+        max_bytes: u64,
         shared: Arc<(Mutex<Shared>, Condvar)>,
         stop: Arc<AtomicBool>,
         dropped: Arc<AtomicBool>,
@@ -108,6 +133,13 @@ impl StreamingSource {
         let content_length = response
             .header("content-length")
             .and_then(|v| v.parse::<u64>().ok());
+        if content_length.is_some_and(|len| len > max_bytes) {
+            let mut state = lock.lock().unwrap();
+            state.error = Some(DOWNLOAD_LIMIT_ERROR.into());
+            state.done = true;
+            cvar.notify_all();
+            return;
+        }
         {
             let mut state = lock.lock().unwrap();
             state.total_len = content_length;
@@ -125,6 +157,10 @@ impl StreamingSource {
                 Ok(0) => break,
                 Ok(n) => {
                     let mut state = lock.lock().unwrap();
+                    if (n as u64) > max_bytes - state.buf.len() as u64 {
+                        state.error = Some(DOWNLOAD_LIMIT_ERROR.into());
+                        break;
+                    }
                     state.buf.extend_from_slice(&chunk[..n]);
                     cvar.notify_all();
                 }
@@ -334,6 +370,53 @@ mod tests {
             StreamingSource::fetch("http://127.0.0.1:1".to_string(), Vec::new(), no_stop());
         let mut buf = [0u8; 8];
         assert!(source.read(&mut buf).is_err());
+    }
+
+    /// Serves `body` after claiming `claimed_len` in Content-Length (`None`
+    /// sends no length), ignoring write errors from a client that hangs up.
+    fn serve_with_length(body: Vec<u8>, claimed_len: Option<usize>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut discard = [0u8; 4096];
+            let _ = stream.read(&mut discard);
+            let length = claimed_len.map_or(String::new(), |n| format!("Content-Length: {n}\r\n"));
+            let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\n{length}\r\n").as_bytes());
+            let _ = stream.write_all(&body);
+        });
+        format!("http://{addr}/track")
+    }
+
+    fn read_error(source: &mut StreamingSource) -> String {
+        let mut got = Vec::new();
+        source.read_to_end(&mut got).unwrap_err().to_string()
+    }
+
+    #[test]
+    fn rejects_a_body_past_the_limit() {
+        // No Content-Length, so only the running total can catch it.
+        let url = serve_with_length(vec![0u8; 100_000], None);
+        let mut source = StreamingSource::fetch_limited(url, Vec::new(), no_stop(), 70_000);
+        let status = source.status();
+        assert_eq!(read_error(&mut source), DOWNLOAD_LIMIT_ERROR);
+        assert_eq!(status.error().as_deref(), Some(DOWNLOAD_LIMIT_ERROR));
+    }
+
+    #[test]
+    fn rejects_a_content_length_past_the_limit_up_front() {
+        let url = serve_with_length(Vec::new(), Some(1000));
+        let mut source = StreamingSource::fetch_limited(url, Vec::new(), no_stop(), 999);
+        assert_eq!(read_error(&mut source), DOWNLOAD_LIMIT_ERROR);
+    }
+
+    #[test]
+    fn accepts_a_body_exactly_at_the_limit() {
+        let url = serve_with_length(vec![1u8; 70_000], Some(70_000));
+        let mut source = StreamingSource::fetch_limited(url, Vec::new(), no_stop(), 70_000);
+        let mut got = Vec::new();
+        source.read_to_end(&mut got).unwrap();
+        assert_eq!(got.len(), 70_000);
     }
 
     #[test]
