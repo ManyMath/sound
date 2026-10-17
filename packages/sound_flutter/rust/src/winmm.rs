@@ -183,6 +183,12 @@ fn join_names<'a>(devices: impl Iterator<Item = &'a (u32, String)>) -> String {
 
 const NUM_BUFFERS: usize = 4;
 const FRAMES_PER_BUFFER: usize = 2048;
+// WinMMPlayback::write consumes a whole header per call, however small the
+// chunk, so a caller pushing 10 ms pieces needs many more headers than
+// playback does to ride out scheduling hiccups. Smaller headers keep the most
+// a fast producer can queue (~370 ms at 44.1 kHz) close to the macOS sink's.
+const SINK_BUFFERS: usize = 32;
+const SINK_FRAMES_PER_BUFFER: usize = 512;
 
 struct BufferRing {
     hdrs: Vec<WaveHdr>,
@@ -195,14 +201,29 @@ pub struct WinMMPlayback {
     handle: HWaveOut,
     ring: UnsafeCell<BufferRing>,
     channels: u32,
+    buf_frames: usize,
 }
 
 impl WinMMPlayback {
     pub fn open(wmm: Arc<WinMM>, channels: u32, rate: u32) -> Result<Self, String> {
-        Self::open_device(wmm, WAVE_MAPPER, channels, rate)
+        Self::open_device(
+            wmm,
+            WAVE_MAPPER,
+            channels,
+            rate,
+            NUM_BUFFERS,
+            FRAMES_PER_BUFFER,
+        )
     }
 
-    fn open_device(wmm: Arc<WinMM>, device: u32, channels: u32, rate: u32) -> Result<Self, String> {
+    fn open_device(
+        wmm: Arc<WinMM>,
+        device: u32,
+        channels: u32,
+        rate: u32,
+        num_buffers: usize,
+        buf_frames: usize,
+    ) -> Result<Self, String> {
         let channels = channels.max(1);
         let block_align = channels
             .checked_mul(2)
@@ -228,10 +249,10 @@ impl WinMMPlayback {
             }
         }
 
-        let buf_bytes = FRAMES_PER_BUFFER * channels as usize * 2;
-        let mut hdrs = Vec::with_capacity(NUM_BUFFERS);
-        let mut datas = Vec::with_capacity(NUM_BUFFERS);
-        for _ in 0..NUM_BUFFERS {
+        let buf_bytes = buf_frames * channels as usize * 2;
+        let mut hdrs = Vec::with_capacity(num_buffers);
+        let mut datas = Vec::with_capacity(num_buffers);
+        for _ in 0..num_buffers {
             let data = vec![0u8; buf_bytes];
             hdrs.push(WaveHdr {
                 data: data.as_ptr() as *mut u8,
@@ -255,6 +276,7 @@ impl WinMMPlayback {
                 next: 0,
             }),
             channels,
+            buf_frames,
         })
     }
 
@@ -285,11 +307,11 @@ impl PcmSink for WinMMPlayback {
     fn write(&self, samples: &[i16]) -> Result<(), String> {
         let bytes: &[u8] =
             unsafe { std::slice::from_raw_parts(samples.as_ptr() as *const u8, samples.len() * 2) };
-        let buf_bytes = FRAMES_PER_BUFFER * self.channels as usize * 2;
+        let buf_bytes = self.buf_frames * self.channels as usize * 2;
         // Safety: PcmSink::write is only called from a single playback thread.
         let ring = unsafe { &mut *self.ring.get() };
         for chunk in bytes.chunks(buf_bytes) {
-            let idx = ring.next % NUM_BUFFERS;
+            let idx = ring.next % ring.hdrs.len();
             // Only touch headers through raw pointers: the device may still be
             // writing to this one until wait_for_hdr sees WHDR_DONE.
             let hdr = unsafe { ring.hdrs.as_mut_ptr().add(idx) };
@@ -378,7 +400,14 @@ impl NamedSink {
     pub fn open(device: &str, rate: u32, channels: u32) -> Result<Self, String> {
         let wmm = Arc::new(WinMM::load()?);
         let id = wmm.find_output_device(device)?;
-        let playback = WinMMPlayback::open_device(wmm, id, channels, rate)?;
+        let playback = WinMMPlayback::open_device(
+            wmm,
+            id,
+            channels,
+            rate,
+            SINK_BUFFERS,
+            SINK_FRAMES_PER_BUFFER,
+        )?;
         Ok(Self {
             playback,
             channels: channels.max(1),
