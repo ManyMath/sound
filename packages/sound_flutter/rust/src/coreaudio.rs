@@ -182,7 +182,10 @@ impl<'a> CoreAudioPlayback<'a> {
             bits_per_channel: 16,
             reserved: 0,
         };
-        let (tx, rx) = sync_channel::<Vec<i16>>(RING_BUFFERS as usize * 2);
+        // Two slots only: the AudioQueue buffers already give ~186 ms of
+        // device-side slack at 44.1 kHz, and a deeper channel would delay
+        // pause, seek and volume by about that much again.
+        let (tx, rx) = sync_channel::<Vec<i16>>(2);
         let channel = Box::new(Channel {
             rx: Mutex::new(rx),
             enqueue: ca.enqueue,
