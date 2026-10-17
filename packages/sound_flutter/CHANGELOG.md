@@ -6,3 +6,6 @@
   iOS, Linux, macOS and Windows.
 - `SoundFlutter.loadAsset`/`playAsset` to play bundled Flutter assets (with an
   optional `package`/`bundle`).
+- `SoundFlutter.ensureInitialized()` now goes through `Sound.initialize()`, so
+  a failing auto-selected backend falls back (e.g. to `silent`) instead of
+  throwing.

@@ -28,11 +28,7 @@ abstract final class SoundFlutter {
   /// early. Returns the name of the active backend (e.g. `ffi`, or `silent`
   /// when no audio device is available).
   static Future<String> ensureInitialized() async {
-    final backend = Sound.backend;
-    if (backend.isAvailable) {
-      await backend.initialize();
-    }
-    return backend.name;
+    return (await Sound.initialize()).name;
   }
 
   /// Loads a bundled Flutter asset (without starting it).

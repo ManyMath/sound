@@ -12,6 +12,35 @@ class _FakeBundle extends CachingAssetBundle {
   Future<ByteData> load(String key) async => ByteData.sublistView(_data);
 }
 
+/// A backend whose initialize() can fail, like a missing audio device.
+class _FakeBackend extends SoundBackend {
+  _FakeBackend(this.name, this.priority, {this.failInit = false});
+
+  @override
+  final String name;
+  @override
+  final int priority;
+  final bool failInit;
+
+  @override
+  bool get isAvailable => true;
+
+  @override
+  Future<void> initialize() async {
+    if (failInit) throw const PlaybackException('no audio device');
+  }
+
+  @override
+  Future<Playback> load(
+    SoundSource source, {
+    double volume = 1.0,
+    bool loop = false,
+  }) async => SilentPlayback(Duration.zero);
+
+  @override
+  Future<void> dispose() async {}
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -39,5 +68,21 @@ void main() {
   test('ensureInitialized returns the active backend name', () async {
     Sound.registerBackend(SilentBackend(), makeActive: true);
     expect(await SoundFlutter.ensureInitialized(), 'silent');
+  });
+  test('ensureInitialized skips an auto-selected backend that fails', () async {
+    Sound.registerBackend(_FakeBackend('broken', 9000, failInit: true));
+    Sound.registerBackend(_FakeBackend('usable', 8000));
+    expect(await SoundFlutter.ensureInitialized(), 'usable');
+  });
+
+  test('ensureInitialized throws when the pinned backend fails', () async {
+    Sound.registerBackend(
+      _FakeBackend('broken', 9000, failInit: true),
+      makeActive: true,
+    );
+    await expectLater(
+      SoundFlutter.ensureInitialized(),
+      throwsA(isA<PlaybackException>()),
+    );
   });
 }
