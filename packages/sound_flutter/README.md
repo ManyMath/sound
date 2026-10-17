@@ -15,6 +15,14 @@ final playback = await Sound.playFile('/path/to/chime.wav');
 await playback.onComplete;
 ```
 
+On-device playback tests live in `example/integration_test`. Run them against
+a connected device, emulator or desktop target:
+
+```sh
+cd example
+flutter test integration_test -d <device-id>
+```
+
 Building requires Rust (`rustup`). To remove even that for consumers, the repo
 is set up for cargokit precompiled binaries:
 
