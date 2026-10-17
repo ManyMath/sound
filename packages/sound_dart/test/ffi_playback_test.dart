@@ -106,6 +106,20 @@ void main() {
       await playback.dispose();
     });
 
+    test('volume reports the loaded and last-set value', () async {
+      Sound.registerBackend(FfiBackend(), makeActive: true);
+      final playback = await Sound.load(
+        SoundSource.bytes(buildSineWav(milliseconds: 80), format: 'wav'),
+        volume: 0.25,
+      );
+      expect(playback.volume, 0.25);
+      await playback.setVolume(0.5);
+      expect(playback.volume, 0.5);
+      await playback.setVolume(-1);
+      expect(playback.volume, 0.0);
+      await playback.dispose();
+    });
+
     test('looping keeps playing past the end until stopped', () async {
       Sound.registerBackend(FfiBackend(), makeActive: true);
       final playback = await Sound.playBytes(

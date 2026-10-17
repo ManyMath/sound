@@ -46,6 +46,10 @@ abstract class Playback {
   /// `1.0` amplify (and may clip); `0.0` is silence.
   Future<void> setVolume(double volume);
 
+  /// The last linear volume set (the `volume:` given to load until
+  /// [setVolume] is called), with negative and NaN values clamped to `0.0`.
+  double get volume;
+
   /// Enables or disables looping. Turning looping off lets the current pass
   /// finish and then completes naturally.
   Future<void> setLooping(bool looping);

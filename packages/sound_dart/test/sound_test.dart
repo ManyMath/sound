@@ -175,6 +175,17 @@ void main() {
   });
 
   group('SilentPlayback', () {
+    test('volume tracks setVolume and clamps to silence', () async {
+      final pb = SilentPlayback(Duration.zero, volume: 0.3);
+      expect(pb.volume, 0.3);
+      await pb.setVolume(1.5);
+      expect(pb.volume, 1.5);
+      await pb.setVolume(-1);
+      expect(pb.volume, 0.0);
+      await pb.setVolume(double.nan);
+      expect(pb.volume, 0.0);
+    });
+
     test('stop before completion marks stopped', () async {
       final pb = SilentPlayback(const Duration(seconds: 10));
       await pb.play();

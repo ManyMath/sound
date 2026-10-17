@@ -12,12 +12,15 @@ extension SoundFade on Playback {
 
   /// Linearly ramps the volume from [from] to [to] over [duration] using
   /// [steps] increments. Stops early if the playback ends mid-ramp.
+  ///
+  /// [from] defaults to the current [volume].
   Future<void> fade(
-    double from,
+    double? from,
     double to,
     Duration duration, {
     int steps = 20,
   }) async {
+    from ??= volume;
     if (steps <= 0 || duration <= Duration.zero) {
       await setVolume(to);
       return;
@@ -36,9 +39,10 @@ extension SoundFade on Playback {
       fade(0, to, duration, steps: steps);
 
   /// Fades the volume down to `0.0` over [duration], then [stop]s by default.
+  /// Starts from [from], or the current [volume] if omitted.
   Future<void> fadeOut(
     Duration duration, {
-    double from = 1.0,
+    double? from,
     int steps = 20,
     bool stop = true,
   }) async {

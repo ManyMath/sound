@@ -113,8 +113,13 @@ void main() {
       SoundSource.bytes(toneWav(), format: 'wav'),
       volume: -1,
     );
+    expect(pb.volume, 0.0);
+    await pb.setVolume(0.5);
+    expect(pb.volume, 0.5);
     await pb.setVolume(-0.5);
+    expect(pb.volume, 0.0);
     await pb.setVolume(double.nan);
+    expect(pb.volume, 0.0);
     await pb.dispose();
   });
 

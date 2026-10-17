@@ -93,7 +93,8 @@ class WebAudioBackend extends SoundBackend {
 class WebAudioPlayback implements Playback {
   WebAudioPlayback(this._context, this._buffer, double volume, this._looping)
     : _gain = _context.createGain() {
-    _gain.gain.value = _gainFor(volume);
+    _volume = _gainFor(volume);
+    _gain.gain.value = _volume;
     _gain.connect(_context.destination);
   }
 
@@ -104,6 +105,7 @@ class WebAudioPlayback implements Playback {
   final web.AudioContext _context;
   final web.AudioBuffer _buffer;
   final web.GainNode _gain;
+  late double _volume;
   bool _looping;
 
   web.AudioBufferSourceNode? _source;
@@ -180,8 +182,12 @@ class WebAudioPlayback implements Playback {
 
   @override
   Future<void> setVolume(double volume) async {
-    _gain.gain.value = _gainFor(volume);
+    _volume = _gainFor(volume);
+    _gain.gain.value = _volume;
   }
+
+  @override
+  double get volume => _volume;
 
   @override
   Future<void> setLooping(bool looping) async {

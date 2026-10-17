@@ -52,7 +52,7 @@ class SilentBackend extends SoundBackend implements PcmTap {
     bool loop = false,
   }) async {
     loaded.add(source);
-    return SilentPlayback(simulatedDuration);
+    return SilentPlayback(simulatedDuration, volume: volume);
   }
 
   @override
@@ -81,9 +81,11 @@ class SilentBackend extends SoundBackend implements PcmTap {
 
 /// The [Playback] returned by [SilentBackend].
 class SilentPlayback implements Playback {
-  SilentPlayback(this._duration);
+  SilentPlayback(this._duration, {double volume = 1.0})
+    : _volume = volume > 0 ? volume : 0.0;
 
   final Duration _duration;
+  double _volume;
   Completer<void> _completer = Completer<void>();
   Timer? _timer;
   PlaybackState _state = PlaybackState.idle;
@@ -127,7 +129,12 @@ class SilentPlayback implements Playback {
   }
 
   @override
-  Future<void> setVolume(double volume) async {}
+  Future<void> setVolume(double volume) async {
+    _volume = volume > 0 ? volume : 0.0;
+  }
+
+  @override
+  double get volume => _volume;
 
   @override
   Future<void> setLooping(bool looping) async {}

@@ -607,6 +607,9 @@ class FfiPlayback implements Playback {
       _state == PlaybackState.connecting;
 
   @override
+  double get volume => _volume > 0 ? _volume : 0.0;
+
+  @override
   Future<void> setVolume(double volume) async {
     _volume = volume;
     if (_hasVoice) _b.setVolume(_player, _voiceId, volume);

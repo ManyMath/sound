@@ -6,11 +6,16 @@ import 'package:test/test.dart';
 class RecordingPlayback implements Playback {
   final List<double> volumes = [];
   @override
+  double volume = 1.0;
+  @override
   PlaybackState state = PlaybackState.playing;
   bool stopped = false;
 
   @override
-  Future<void> setVolume(double volume) async => volumes.add(volume);
+  Future<void> setVolume(double volume) async {
+    this.volume = volume;
+    volumes.add(volume);
+  }
 
   @override
   Future<void> stop() async {
@@ -60,10 +65,31 @@ void main() {
   test('fadeOut ramps to 0 and stops by default', () async {
     final pb = RecordingPlayback();
     await pb.fadeOut(const Duration(milliseconds: 50), steps: 5);
-    expect(pb.volumes.first, 1.0);
+    expect(pb.volumes.first, 1.0); // default volume
     expect(pb.volumes.last, closeTo(0.0, 1e-9));
     expect(isMonotonicIncreasing(pb.volumes.reversed.toList()), isTrue);
     expect(pb.stopped, isTrue);
+  });
+
+  test('fadeOut starts from the current volume', () async {
+    final pb = RecordingPlayback()..volume = 0.2;
+    await pb.fadeOut(const Duration(milliseconds: 50), steps: 5);
+    expect(pb.volumes.first, 0.2);
+    expect(pb.volumes.every((v) => v <= 0.2), isTrue);
+    expect(pb.volumes.last, closeTo(0.0, 1e-9));
+  });
+
+  test('fade with no from starts at the current volume', () async {
+    final pb = RecordingPlayback()..volume = 0.4;
+    await pb.fade(null, 1, const Duration(milliseconds: 50), steps: 5);
+    expect(pb.volumes.first, 0.4);
+    expect(pb.volumes.last, closeTo(1.0, 1e-9));
+  });
+
+  test('fadeOut(from:) overrides the current volume', () async {
+    final pb = RecordingPlayback()..volume = 0.2;
+    await pb.fadeOut(const Duration(milliseconds: 50), from: 0.8, steps: 5);
+    expect(pb.volumes.first, 0.8);
   });
 
   test('fadeOut(stop: false) does not stop', () async {
