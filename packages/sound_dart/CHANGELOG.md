@@ -18,4 +18,6 @@
 - `Sound.openPcmStream` to pull a clip's decoded PCM frames as a stream
   without playing it.
 - `SoundFade` extension: `fade`, `fadeIn`, `fadeOut` volume ramps.
+- Native decoding is bounded for hostile input: HTTP downloads over 256 MiB
+  and audio decoding to more than 512 MiB of PCM fail with an error.
 - CLI example and a web example.

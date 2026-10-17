@@ -951,7 +951,10 @@ pub unsafe extern "C" fn sound_play_file(
 ///
 /// Memory note: both the compressed download and the decoded PCM are held in
 /// memory for the voice's lifetime (that is what makes seek/loop instant), so
-/// this suits tracks, not open-ended live streams.
+/// this suits tracks, not open-ended live streams. Both are capped: a
+/// download past 256 MiB fails, and so does audio that decodes to more than
+/// 512 MiB of PCM (about 50 minutes of 44.1 kHz stereo), after any audio
+/// already decoded has played.
 ///
 /// # Safety
 /// `url` must be a valid NUL-terminated UTF-8 C string. `header_names` and

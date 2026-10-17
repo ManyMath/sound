@@ -9,7 +9,9 @@
 //! lifetime of the source, so seeking backward (or re-reading during a
 //! format probe) is always immediate — the tradeoff is holding the whole
 //! track in memory by the time it finishes downloading, same as the
-//! existing bytes/file sources after `symphonia` decodes them.
+//! existing bytes/file sources after `symphonia` decodes them. The buffer is
+//! capped at 256 MiB: a response larger than that (by `Content-Length` or by
+//! bytes received) fails the fetch.
 
 use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicBool, Ordering};
