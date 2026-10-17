@@ -22,4 +22,6 @@
   start from it by default instead of `1.0`.
 - Native decoding is bounded for hostile input: HTTP downloads over 256 MiB
   and audio decoding to more than 512 MiB of PCM fail with an error.
+- `Sound.initialize()` initializes the active backend, falling back past an
+  auto-selected one that fails (a pinned backend still throws).
 - CLI example and a web example.

@@ -118,6 +118,13 @@ class Sound {
     return b.load(source, volume: volume, loop: loop);
   }
 
+  /// Initializes and returns the active backend without loading anything.
+  ///
+  /// An auto-selected backend whose `initialize()` throws is skipped in favor
+  /// of the next one; a pinned backend (see [useBackend]) rethrows instead.
+  /// [load] does the same implicitly.
+  static Future<SoundBackend> initialize() => _ready();
+
   /// The active backend, initialized, falling back past auto-selected
   /// backends whose initialize() throws.
   static Future<SoundBackend> _ready() async {

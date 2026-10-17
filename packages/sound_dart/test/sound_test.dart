@@ -156,6 +156,24 @@ void main() {
     });
   });
 
+  group('Sound.initialize', () {
+    test('skips an auto-selected backend that fails to initialize', () async {
+      final broken = _ProbeBackend('broken', priority: 9000, failInit: true);
+      Sound.registerBackend(broken);
+      Sound.registerBackend(_ProbeBackend('usable', priority: 8000));
+      expect((await Sound.initialize()).name, 'usable');
+      expect(broken.initializeCalls, 1);
+    });
+
+    test('rethrows when the pinned backend fails to initialize', () async {
+      Sound.registerBackend(
+        _ProbeBackend('broken', priority: 1, failInit: true),
+        makeActive: true,
+      );
+      await expectLater(Sound.initialize(), throwsA(isA<PlaybackException>()));
+    });
+  });
+
   group('registry robustness', () {
     test('registering the same instance twice is idempotent', () {
       final probe = _ProbeBackend('probe', priority: 9000);
