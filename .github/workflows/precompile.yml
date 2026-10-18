@@ -9,10 +9,9 @@ name: Precompile binaries
 #   CARGOKIT_PRIVATE_KEY — the hex private key from `build_tool gen-key`
 #   (GITHUB_TOKEN is provided automatically).
 #
-# Only Linux x86_64 and the Android ABIs are built here so far. The macOS,
-# iOS and Windows backends exist too, but need their own runners
-# (macos-latest for Apple, windows-latest for Windows) before prebuilts can be
-# published for them.
+# Each platform builds on its own runner: ubuntu-latest for Linux and Android,
+# macos-latest for macOS and iOS, windows-latest for Windows. build_tool adds
+# the Rust targets it needs before each build.
 
 on:
   workflow_dispatch:
@@ -75,3 +74,46 @@ jobs:
             --target armv7-linux-androideabi \
             --target x86_64-linux-android \
             --target i686-linux-android
+
+  macos:
+    name: Precompile (macOS and iOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+      - uses: dtolnay/rust-toolchain@stable
+      - run: dart pub get
+        working-directory: ${{ env.BUILD_TOOL }}
+      - name: Precompile
+        env:
+          PRIVATE_KEY: ${{ secrets.CARGOKIT_PRIVATE_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          dart run "$BUILD_TOOL/bin/build_tool.dart" precompile-binaries -v \
+            --manifest-dir="$GITHUB_WORKSPACE/packages/sound_flutter/rust" \
+            --repository="$REPO" \
+            --target x86_64-apple-darwin \
+            --target aarch64-apple-darwin \
+            --target aarch64-apple-ios \
+            --target aarch64-apple-ios-sim \
+            --target x86_64-apple-ios
+
+  windows:
+    name: Precompile (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+      - uses: dtolnay/rust-toolchain@stable
+      - run: dart pub get
+        working-directory: ${{ env.BUILD_TOOL }}
+      - name: Precompile
+        shell: bash
+        env:
+          PRIVATE_KEY: ${{ secrets.CARGOKIT_PRIVATE_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          dart run "$BUILD_TOOL/bin/build_tool.dart" precompile-binaries -v \
+            --manifest-dir="$GITHUB_WORKSPACE/packages/sound_flutter/rust" \
+            --repository="$REPO" \
+            --target x86_64-pc-windows-msvc
