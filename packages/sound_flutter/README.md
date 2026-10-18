@@ -36,8 +36,8 @@ is set up for cargokit precompiled binaries:
 cargokit only uses a prebuilt binary when Rust isn't installed (or the app
 opts in with `use_precompiled_binaries: true` in its `cargokit_options.yaml`)
 and a signed release for the current crate exists; otherwise it builds from
-source. The workflow currently publishes Linux x86_64 and Android binaries
-only.
+source. The workflow publishes binaries for Linux x86_64, Android, macOS,
+iOS (device and simulator) and Windows x86_64.
 
 ## Requirements
 
