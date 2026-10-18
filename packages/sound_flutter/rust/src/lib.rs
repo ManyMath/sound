@@ -207,7 +207,7 @@ impl LiveBuffer {
 /// still being filled by a concurrent decode thread (URL playback). Lets
 /// [play_pcm] serve both without duplicating the chunk/gain/seek/loop logic.
 enum Samples {
-    Complete(Vec<i16>),
+    Complete(Arc<Vec<i16>>),
     Live(Arc<LiveBuffer>),
 }
 
@@ -285,24 +285,25 @@ impl Player {
     }
 
     fn spawn(&self, audio: DecodedAudio, looping: bool) -> u64 {
+        self.spawn_shared(Arc::new(audio.samples), audio.channels, audio.rate, looping)
+    }
+
+    /// Starts a voice over a complete sample buffer that may be shared with
+    /// other voices or a [Decoded] handle; nothing is copied.
+    fn spawn_shared(&self, samples: Arc<Vec<i16>>, channels: u32, rate: u32, looping: bool) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let shared = VoiceShared::new(looping);
-        let rate = Arc::new(AtomicU32::new(audio.rate));
-        let channels = audio.channels.max(1) as usize;
-        let total_frames = Arc::new(AtomicU64::new((audio.samples.len() / channels) as u64));
+        let rate_atomic = Arc::new(AtomicU32::new(rate));
+        let frame_width = channels.max(1) as usize;
+        let total_frames = Arc::new(AtomicU64::new((samples.len() / frame_width) as u64));
 
-        let handle = self.start_thread(
-            audio.channels,
-            audio.rate,
-            Samples::Complete(audio.samples),
-            shared.clone(),
-        );
+        let handle = self.start_thread(channels, rate, Samples::Complete(samples), shared.clone());
 
         self.voices.lock().unwrap().insert(
             id,
             Voice {
                 shared,
-                rate,
+                rate: rate_atomic,
                 total_frames,
                 handle: Some(handle),
             },
@@ -1251,7 +1252,7 @@ pub extern "C" fn sound_last_error() -> *const c_char {
 /// without any speaker output. It reuses the same `decode` path the playback
 /// functions use.
 pub struct Decoded {
-    samples: Vec<i16>,
+    samples: Arc<Vec<i16>>,
     channels: u32,
     rate: u32,
 }
@@ -1282,7 +1283,7 @@ pub unsafe extern "C" fn sound_decode_bytes(
         };
         match decode::decode_bytes(bytes, hint) {
             Ok(a) => Box::into_raw(Box::new(Decoded {
-                samples: a.samples,
+                samples: Arc::new(a.samples),
                 channels: a.channels,
                 rate: a.rate,
             })),
@@ -1316,7 +1317,7 @@ pub unsafe extern "C" fn sound_decode_file(path: *const c_char) -> *mut Decoded 
         };
         match decode::decode_file(path) {
             Ok(a) => Box::into_raw(Box::new(Decoded {
-                samples: a.samples,
+                samples: Arc::new(a.samples),
                 channels: a.channels,
                 rate: a.rate,
             })),
@@ -1379,6 +1380,36 @@ pub unsafe extern "C" fn sound_decoded_copy(
     let n = cap.min(d.samples.len() - start);
     std::ptr::copy_nonoverlapping(d.samples.as_ptr().add(start), out, n);
     n as isize
+}
+
+/// Starts playback of an already-decoded [Decoded] buffer, skipping the
+/// decode that [sound_play_bytes] and [sound_play_file] do on every call.
+/// Returns a voice id, or 0 on error.
+///
+/// The voice shares the buffer's samples rather than copying them, so
+/// `decoded` may be freed with [sound_decoded_free] while the voice plays.
+///
+/// # Safety
+/// `decoded` must be null or a live handle from [sound_decode_bytes] or
+/// [sound_decode_file]. `looping` is nonzero to repeat from the start at end
+/// of audio.
+#[no_mangle]
+pub unsafe extern "C" fn sound_play_decoded(
+    player: *mut Player,
+    decoded: *const Decoded,
+    looping: c_int,
+) -> u64 {
+    catch_panic(0, set_last_error, || {
+        let Some(player) = with_player(player) else {
+            return 0;
+        };
+        if decoded.is_null() {
+            set_last_error("null decoded buffer");
+            return 0;
+        }
+        let d = &*decoded;
+        player.spawn_shared(Arc::clone(&d.samples), d.channels, d.rate, looping != 0)
+    })
 }
 
 /// Frees a [Decoded] buffer returned by [sound_decode_bytes] or
@@ -1580,6 +1611,42 @@ mod tests {
         assert!(d.is_null());
     }
 
+    #[test]
+    fn play_decoded_rejects_null_handles() {
+        assert_eq!(
+            unsafe { sound_play_decoded(std::ptr::null_mut(), std::ptr::null(), 0) },
+            0
+        );
+        let player = sound_player_new();
+        if player.is_null() {
+            return; // no audio library on this host
+        }
+        assert_eq!(
+            unsafe { sound_play_decoded(player, std::ptr::null(), 0) },
+            0
+        );
+        let msg = unsafe { CStr::from_ptr(sound_last_error()) };
+        assert_eq!(msg.to_bytes(), b"null decoded buffer");
+        sound_player_free(player);
+    }
+
+    #[test]
+    fn play_decoded_starts_a_voice_and_outlives_its_buffer() {
+        let player = sound_player_new();
+        if player.is_null() {
+            return; // no audio library on this host
+        }
+        let bytes = sine_wav();
+        let d = unsafe { sound_decode_bytes(bytes.as_ptr(), bytes.len(), std::ptr::null()) };
+        assert!(!d.is_null());
+        let id = unsafe { sound_play_decoded(player, d, 0) };
+        assert_ne!(id, 0);
+        sound_decoded_free(d);
+        // The voice still reports the buffer's duration (no device needed).
+        assert_eq!(sound_duration_frames(player, id), 4_410);
+        sound_player_free(player);
+    }
+
     #[cfg(any(
         target_os = "linux",
         target_os = "android",
@@ -1617,6 +1684,49 @@ mod tests {
             assert_eq!(sink.0.lock().unwrap().len(), 10_000);
             assert_eq!(sh.state.load(Ordering::SeqCst), STATE_ERROR);
             assert_eq!(sh.error.lock().unwrap().as_deref(), Some("body truncated"));
+        }
+
+        #[test]
+        fn a_decoded_buffer_is_shared_with_its_voice_not_copied() {
+            let bytes = super::sine_wav();
+            let d = unsafe { sound_decode_bytes(bytes.as_ptr(), bytes.len(), std::ptr::null()) };
+            assert!(!d.is_null());
+            let samples = unsafe { &*d }.samples.clone();
+            assert_eq!(Arc::strong_count(&samples), 2);
+
+            let sh = VoiceShared::new(false);
+            let sink = RecordingSink::default();
+            play_pcm(&sink, 1, Samples::Complete(Arc::clone(&samples)), &sh);
+
+            assert_eq!(sh.state.load(Ordering::SeqCst), STATE_COMPLETED);
+            assert_eq!(*sink.0.lock().unwrap(), *samples);
+            // Only the Decoded and our clone remain: the voice dropped its
+            // handle on the same allocation instead of owning a copy.
+            assert_eq!(Arc::strong_count(&samples), 2);
+            sound_decoded_free(d);
+            assert_eq!(Arc::strong_count(&samples), 1);
+        }
+
+        #[test]
+        fn freeing_a_decoded_buffer_mid_playback_is_safe() {
+            let bytes = super::sine_wav();
+            let d = unsafe { sound_decode_bytes(bytes.as_ptr(), bytes.len(), std::ptr::null()) };
+            let samples = Arc::clone(&unsafe { &*d }.samples);
+            let sh = VoiceShared::new(true);
+            let sink = Arc::new(RecordingSink::default());
+            let thread = {
+                let (sh, sink) = (sh.clone(), sink.clone());
+                std::thread::spawn(move || play_pcm(&*sink, 1, Samples::Complete(samples), &sh))
+            };
+            assert!(eventually(|| !sink.0.lock().unwrap().is_empty()));
+
+            sound_decoded_free(d);
+
+            // The looping voice keeps reading past one full pass.
+            assert!(eventually(|| sink.0.lock().unwrap().len() > 4_410));
+            sh.stop.store(true, Ordering::SeqCst);
+            thread.join().unwrap();
+            assert_eq!(sh.state.load(Ordering::SeqCst), STATE_STOPPED);
         }
 
         /// Polls `cond` for up to two seconds.
@@ -1666,7 +1776,7 @@ mod tests {
                 sh.seek_request.store(target, Ordering::SeqCst);
                 let sink = RecordingSink::default();
 
-                play_pcm(&sink, 2, Samples::Complete(vec![0; 2_000]), &sh);
+                play_pcm(&sink, 2, Samples::Complete(Arc::new(vec![0; 2_000])), &sh);
 
                 assert!(sink.0.lock().unwrap().is_empty());
                 assert_eq!(sh.state.load(Ordering::SeqCst), STATE_COMPLETED);
@@ -1782,7 +1892,12 @@ mod tests {
                 fn drain(&self) {}
             }
             let sh = VoiceShared::new(false);
-            run_voice(Ok(PanickingSink), 1, Samples::Complete(vec![0; 100]), &sh);
+            run_voice(
+                Ok(PanickingSink),
+                1,
+                Samples::Complete(Arc::new(vec![0; 100])),
+                &sh,
+            );
             assert_eq!(sh.state.load(Ordering::SeqCst), STATE_ERROR);
             assert_eq!(
                 sh.error.lock().unwrap().as_deref(),
@@ -1796,7 +1911,12 @@ mod tests {
             let thread = {
                 let sh = sh.clone();
                 std::thread::spawn(move || {
-                    play_pcm(&RecordingSink::default(), 1, Samples::Complete(vec![]), &sh)
+                    play_pcm(
+                        &RecordingSink::default(),
+                        1,
+                        Samples::Complete(Arc::new(vec![])),
+                        &sh,
+                    )
                 })
             };
             let done = eventually(|| sh.state.load(Ordering::SeqCst) == STATE_COMPLETED);
