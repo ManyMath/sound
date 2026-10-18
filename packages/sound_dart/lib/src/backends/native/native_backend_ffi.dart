@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
@@ -78,6 +79,9 @@ typedef _DecodedCopyNative =
 typedef _DecodedCopy = int Function(Pointer<Void>, int, Pointer<Int16>, int);
 typedef _DecodedFreeNative = Void Function(Pointer<Void>);
 typedef _DecodedFree = void Function(Pointer<Void>);
+typedef _PlayDecodedNative =
+    Uint64 Function(Pointer<Void>, Pointer<Void>, Int32);
+typedef _PlayDecoded = int Function(Pointer<Void>, Pointer<Void>, int);
 
 // Voice state codes mirrored from the native side.
 const int _statePlaying = 0;
@@ -94,6 +98,9 @@ class NativeLibrary {
 
   static DynamicLibrary? _opened;
   static bool _attempted = false;
+  // How _opened was reached: a path, or null for DynamicLibrary.process().
+  // Statics are per-isolate, so a helper isolate re-opens the library from it.
+  static String? _openedPath;
 
   static String get _fileName => switch (Platform.operatingSystem) {
     'windows' => 'sound_cli.dll',
@@ -109,6 +116,7 @@ class NativeLibrary {
     for (final candidate in _candidates()) {
       try {
         _opened = DynamicLibrary.open(candidate);
+        _openedPath = candidate;
         return _opened;
       } on Object {
         // Try the next candidate.
@@ -221,6 +229,12 @@ class _Bindings {
       ),
       decodedFree = lib.lookupFunction<_DecodedFreeNative, _DecodedFree>(
         'sound_decoded_free',
+      ),
+      decodedFinalizer = NativeFinalizer(
+        lib.lookup<NativeFunction<_DecodedFreeNative>>('sound_decoded_free'),
+      ),
+      playDecoded = lib.lookupFunction<_PlayDecodedNative, _PlayDecoded>(
+        'sound_play_decoded',
       );
 
   final Pointer<Void> Function() playerNew;
@@ -248,6 +262,70 @@ class _Bindings {
   final _DecodedInt decodedRate;
   final _DecodedCopy decodedCopy;
   final _DecodedFree decodedFree;
+  // Frees a Decoded that its playback never got to dispose.
+  final NativeFinalizer decodedFinalizer;
+  final _PlayDecoded playDecoded;
+}
+
+// Encoded bytes up to this size are decoded on the calling isolate.
+const int _inlineDecodeBytes = 64 * 1024;
+
+typedef _Decoded = ({int address, String? error});
+
+/// Decodes [source] (bytes or file) on a helper isolate and returns the
+/// native Decoded handle's address, or 0 and the error message. The caller
+/// owns the handle. The error is read in the helper because it is
+/// thread-local to the call that failed.
+Future<_Decoded> _decodeOffIsolate(SoundSource source) {
+  final libPath = NativeLibrary._openedPath;
+  // A short clip decodes faster than a helper isolate starts.
+  if (source is BytesSource && source.bytes.length <= _inlineDecodeBytes) {
+    return Future.value(_decodeHere(libPath, source));
+  }
+  return Isolate.run(() => _decodeHere(libPath, source));
+}
+
+_Decoded _decodeHere(String? libPath, SoundSource source) {
+  final lib = libPath == null
+      ? DynamicLibrary.process()
+      : DynamicLibrary.open(libPath);
+  final decodeBytes = lib.lookupFunction<_DecodeBytesNative, _DecodeBytes>(
+    'sound_decode_bytes',
+  );
+  final decodeFile = lib.lookupFunction<_DecodeFileNative, _DecodeFile>(
+    'sound_decode_file',
+  );
+  final Pointer<Void> decoded;
+  switch (source) {
+    case BytesSource(:final bytes, :final format):
+      final buf = malloc<Uint8>(bytes.length);
+      final cFormat = format == null ? nullptr : format.toNativeUtf8();
+      try {
+        buf.asTypedList(bytes.length).setAll(0, bytes);
+        decoded = decodeBytes(buf, bytes.length, cFormat);
+      } finally {
+        malloc.free(buf);
+        if (cFormat != nullptr) malloc.free(cFormat);
+      }
+    case FileSource(:final path):
+      final cPath = path.toNativeUtf8();
+      try {
+        decoded = decodeFile(cPath);
+      } finally {
+        malloc.free(cPath);
+      }
+    case UriSource():
+      throw ArgumentError('UriSource is streamed, not decoded up front');
+  }
+  if (decoded != nullptr) return (address: decoded.address, error: null);
+  final lastError = lib.lookupFunction<_LastErrorNative, _LastError>(
+    'sound_last_error',
+  );
+  final msg = lastError();
+  return (
+    address: 0,
+    error: msg == nullptr ? 'unknown error' : msg.toDartString(),
+  );
 }
 
 /// Plays audio by calling the native `sound_cli` library over FFI.
@@ -255,6 +333,12 @@ class _Bindings {
 /// It also implements [PcmTap]: the native decoder can hand back decoded PCM
 /// without opening an audio device, which is how a clip is routed into a
 /// capture stream instead of the speakers.
+///
+/// Bytes and file sources are decoded once, on a helper isolate, during
+/// [load]; every [Playback.play] then starts a voice from that buffer without
+/// decoding again. A decode failure does not make [load] throw: [Playback.play]
+/// throws it, as it always has. URL sources are streamed natively and not
+/// decoded up front.
 class FfiBackend extends SoundBackend implements PcmTap {
   _Bindings? _bindings;
   Pointer<Void> _player = nullptr;
@@ -311,7 +395,9 @@ class FfiBackend extends SoundBackend implements PcmTap {
     bool loop = false,
   }) async {
     if (_player == nullptr) await initialize();
-    return FfiPlayback._(this, source, volume, loop);
+    final playback = FfiPlayback._(this, source, volume, loop);
+    if (source is! UriSource) await playback._ensureDecoded();
+    return playback;
   }
 
   @override
@@ -330,30 +416,19 @@ class FfiBackend extends SoundBackend implements PcmTap {
 
   /// Decodes [source] to interleaved S16LE via the native decoder (no audio
   /// device) and copies the samples into a Dart-owned [PcmStream].
-  PcmStream _decode(
+  Future<PcmStream> _decode(
     SoundSource source, {
     required int chunkFrames,
     required bool loop,
-  }) {
+  }) async {
     final b = _bindings!;
     final Pointer<Void> decoded;
     switch (source) {
-      case BytesSource(:final bytes, :final format):
-        final buf = malloc<Uint8>(bytes.length);
-        final cFormat = format == null ? nullptr : format.toNativeUtf8();
-        try {
-          buf.asTypedList(bytes.length).setAll(0, bytes);
-          decoded = b.decodeBytes(buf, bytes.length, cFormat);
-        } finally {
-          malloc.free(buf);
-          if (cFormat != nullptr) malloc.free(cFormat);
-        }
-      case FileSource(:final path):
-        final cPath = path.toNativeUtf8();
-        try {
-          decoded = b.decodeFile(cPath);
-        } finally {
-          malloc.free(cPath);
+      case BytesSource() || FileSource():
+        final result = await _decodeOffIsolate(source);
+        decoded = Pointer.fromAddress(result.address);
+        if (decoded == nullptr) {
+          throw UnsupportedSourceException('decode failed: ${result.error}');
         }
       case UriSource():
         // The no-device decode-to-PCM tap (used by `soundboard`'s mic
@@ -362,9 +437,6 @@ class FfiBackend extends SoundBackend implements PcmTap {
         throw const UnsupportedSourceException(
           'UriSource is not supported by openPcmStream yet; use load()/play() instead',
         );
-    }
-    if (decoded == nullptr) {
-      throw UnsupportedSourceException('decode failed: ${_lastError()}');
     }
     try {
       final len = b.decodedLen(decoded);
@@ -406,7 +478,7 @@ class FfiBackend extends SoundBackend implements PcmTap {
 /// A single FFI-backed voice. Created idle; [play] starts a native voice and
 /// polls its state to resolve [onComplete]. The native voice is freed as soon
 /// as it ends, keeping its final position and duration.
-class FfiPlayback implements Playback {
+class FfiPlayback implements Playback, Finalizable {
   FfiPlayback._(this._backend, this._source, this._volume, this._looping);
 
   final FfiBackend _backend;
@@ -420,6 +492,10 @@ class FfiPlayback implements Playback {
   int _durationFrames = 0;
   int _positionFrames = 0;
   bool _pauseRequested = false;
+  // Address of the native Decoded buffer (bytes/file sources), 0 if none yet.
+  int _decoded = 0;
+  String? _decodeError;
+  Future<void>? _decoding;
   PlaybackState _state = PlaybackState.idle;
   Timer? _poll;
   // Made up front and replaced only once used up, so a future taken before
@@ -443,9 +519,47 @@ class FfiPlayback implements Playback {
   @override
   Future<void> get onComplete => _completer.future;
 
+  /// Whether the decoded buffer is held; false before the decode finishes,
+  /// after it fails, and after [dispose].
+  bool get hasDecodedBuffer => _decoded != 0;
+
+  /// Decodes the source off the calling isolate unless that is already done
+  /// (or underway). A failure is kept for [play] to throw, not thrown here.
+  Future<void> _ensureDecoded() {
+    if (_decoded != 0) return Future.value();
+    return _decoding ??= _decode().whenComplete(() => _decoding = null);
+  }
+
+  Future<void> _decode() async {
+    final result = await _decodeOffIsolate(_source);
+    if (result.address == 0) {
+      _decodeError = result.error;
+      return;
+    }
+    final handle = Pointer<Void>.fromAddress(result.address);
+    if (_state == PlaybackState.disposed) {
+      _b.decodedFree(handle);
+      return;
+    }
+    _decodeError = null;
+    _decoded = result.address;
+    final samples = _b.decodedLen(handle);
+    _b.decodedFinalizer.attach(
+      this,
+      handle,
+      detach: this,
+      externalSize: samples > 0 ? samples * 2 : null,
+    );
+  }
+
   @override
   Future<void> play() async {
     if (_state == PlaybackState.disposed) return;
+    // A failed decode is retried here, as the file may exist by now.
+    if (_source is! UriSource && _decoded == 0) {
+      await _ensureDecoded();
+      if (_state == PlaybackState.disposed) return;
+    }
     _freeVoice();
     if (_completer.isCompleted) _completer = _newCompleter();
     _pauseRequested = false;
@@ -454,7 +568,9 @@ class FfiPlayback implements Playback {
     _voiceGeneration = _backend._generation;
     if (_voiceId == 0) {
       _state = PlaybackState.idle;
-      throw PlaybackException('playback failed: ${_backend._lastError()}');
+      throw PlaybackException(
+        'playback failed: ${_decodeError ?? _backend._lastError()}',
+      );
     }
     if (_volume != 1.0) _b.setVolume(_player, _voiceId, _volume);
     _rate = _b.sampleRate(_player, _voiceId);
@@ -472,25 +588,11 @@ class FfiPlayback implements Playback {
   int _start() {
     final loopFlag = _looping ? 1 : 0;
     switch (_source) {
-      case BytesSource(:final bytes, :final format):
-        final buf = malloc<Uint8>(bytes.length);
-        final cFormat = format == null ? nullptr : format.toNativeUtf8();
-        try {
-          buf.asTypedList(bytes.length).setAll(0, bytes);
-          // The native side decodes synchronously before returning, so the
-          // buffers are safe to free immediately afterward.
-          return _b.playBytes(_player, buf, bytes.length, cFormat, loopFlag);
-        } finally {
-          malloc.free(buf);
-          if (cFormat != nullptr) malloc.free(cFormat);
-        }
-      case FileSource(:final path):
-        final cPath = path.toNativeUtf8();
-        try {
-          return _b.playFile(_player, cPath, loopFlag);
-        } finally {
-          malloc.free(cPath);
-        }
+      case BytesSource() || FileSource():
+        // The voice shares the decoded samples, so dispose() freeing the
+        // buffer while it plays is safe.
+        if (_decoded == 0) return 0;
+        return _b.playDecoded(_player, Pointer.fromAddress(_decoded), loopFlag);
       case UriSource(:final uri, :final headers, :final format):
         final cUrl = uri.toString().toNativeUtf8();
         final cFormat = format == null ? nullptr : format.toNativeUtf8();
@@ -697,6 +799,11 @@ class FfiPlayback implements Playback {
   Future<void> dispose() async {
     _freeVoice();
     _state = PlaybackState.disposed;
+    if (_decoded != 0) {
+      _b.decodedFinalizer.detach(this);
+      _b.decodedFree(Pointer.fromAddress(_decoded));
+      _decoded = 0;
+    }
     if (!_completer.isCompleted) _completer.complete();
   }
 }

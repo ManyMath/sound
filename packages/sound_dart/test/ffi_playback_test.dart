@@ -529,5 +529,128 @@ void main() {
       expect(playback.state, PlaybackState.stopped);
       await playback.dispose();
     });
+
+    test('replays a loaded handle from the one decoded buffer', () async {
+      Sound.registerBackend(FfiBackend(), makeActive: true);
+      final pb =
+          await Sound.load(
+                SoundSource.bytes(
+                  buildSineWav(milliseconds: 80),
+                  format: 'wav',
+                ),
+              )
+              as FfiPlayback;
+      expect(pb.hasDecodedBuffer, isTrue);
+      for (var i = 0; i < 3; i++) {
+        await pb.play();
+        expect(pb.isPlaying, isTrue);
+        await pb.onComplete.timeout(const Duration(seconds: 5));
+        expect(pb.state, PlaybackState.completed);
+        expect(pb.hasDecodedBuffer, isTrue);
+      }
+      await pb.dispose();
+    });
+
+    test('a file source plays and replays', () async {
+      Sound.registerBackend(FfiBackend(), makeActive: true);
+      final dir = Directory.systemTemp.createTempSync('sound_dart_test');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final file = File('${dir.path}/tone.wav')
+        ..writeAsBytesSync(buildSineWav(milliseconds: 80));
+      final pb = await Sound.load(SoundSource.file(file.path));
+      await pb.play();
+      await pb.onComplete.timeout(const Duration(seconds: 5));
+      await pb.play();
+      await pb.onComplete.timeout(const Duration(seconds: 5));
+      expect(pb.state, PlaybackState.completed);
+      await pb.dispose();
+    });
+
+    test('dispose frees the decoded buffer, even mid-playback', () async {
+      Sound.registerBackend(FfiBackend(), makeActive: true);
+      final pb =
+          await Sound.load(
+                SoundSource.bytes(
+                  buildSineWav(milliseconds: 2000),
+                  format: 'wav',
+                ),
+              )
+              as FfiPlayback;
+      expect(pb.hasDecodedBuffer, isTrue);
+      await pb.play();
+      await pb.dispose();
+      expect(pb.hasDecodedBuffer, isFalse);
+      await pb.play(); // no-op on a disposed handle
+      expect(pb.state, PlaybackState.disposed);
+    });
+
+    test('a decode error is thrown by play(), not load()', () async {
+      Sound.registerBackend(FfiBackend(), makeActive: true);
+      // Past the inline-decode size, so this goes through the helper isolate.
+      final garbage = Uint8List(100 * 1024);
+      final pb =
+          await Sound.load(SoundSource.bytes(garbage, format: 'wav'))
+              as FfiPlayback;
+      expect(pb.hasDecodedBuffer, isFalse);
+      await expectLater(pb.play(), throwsA(isA<PlaybackException>()));
+      expect(pb.state, PlaybackState.idle);
+      await pb.dispose();
+
+      final small = await Sound.load(SoundSource.bytes(Uint8List(64)));
+      await expectLater(small.play(), throwsA(isA<PlaybackException>()));
+      await small.dispose();
+
+      final missing = await Sound.load(
+        SoundSource.file('/nonexistent/sound_dart_test.wav'),
+      );
+      await expectLater(missing.play(), throwsA(isA<PlaybackException>()));
+      await missing.dispose();
+    });
+
+    test('play() retries a decode that failed at load', () async {
+      Sound.registerBackend(FfiBackend(), makeActive: true);
+      final dir = Directory.systemTemp.createTempSync('sound_dart_test');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final path = '${dir.path}/late.wav';
+      final pb = await Sound.load(SoundSource.file(path));
+      File(path).writeAsBytesSync(buildSineWav(milliseconds: 80));
+      await pb.play();
+      await pb.onComplete.timeout(const Duration(seconds: 5));
+      expect(pb.state, PlaybackState.completed);
+      await pb.dispose();
+    });
+
+    test('openPcmStream reports a decode error as unsupported', () async {
+      final backend = FfiBackend();
+      await expectLater(
+        backend.openPcmStream(SoundSource.bytes(Uint8List(100 * 1024))),
+        throwsA(isA<UnsupportedSourceException>()),
+      );
+      final stream = await backend.openPcmStream(
+        SoundSource.bytes(buildSineWav(milliseconds: 100), format: 'wav'),
+      );
+      expect(stream.sampleRate, 8000);
+    });
+
+    test('load() of a large WAV does not block the event loop', () async {
+      Sound.registerBackend(FfiBackend(), makeActive: true);
+      // 120 s of 44.1 kHz stereo: ~21 MB, far past the inline-decode size.
+      final wav = buildSineWav(
+        sampleRate: 44100,
+        milliseconds: 120000,
+        channels: 2,
+      );
+      var ticks = 0;
+      final timer = Timer.periodic(
+        const Duration(milliseconds: 2),
+        (_) => ticks++,
+      );
+      addTearDown(timer.cancel);
+      final pb = await Sound.load(SoundSource.bytes(wav, format: 'wav'));
+      timer.cancel();
+      // A load that decoded on this isolate would let at most one tick in.
+      expect(ticks, greaterThan(2));
+      await pb.dispose();
+    });
   }, skip: available ? false : 'sound_cli library not built');
 }
