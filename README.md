@@ -51,3 +51,17 @@ dart run melos run format         # check Dart formatting (format:fix to apply)
 dart run melos run test           # Dart + Flutter tests
 dart run melos run native:test    # Rust crate tests
 ```
+
+`tool/consumer_build.sh linux apk` builds a fresh `flutter create` app
+against the two packages exported the way pub.dev ships them, and
+`flutter test integration_test -d <device>` (from
+`packages/sound_flutter/example`) runs the on-device playback tests.
+
+## Releasing
+
+1. Run the example and the integration tests on each platform's real
+   hardware, Windows and Apple devices included.
+2. Push a `v*` tag to GitHub so `.github/workflows/precompile.yml` publishes
+   the signed prebuilt libraries for the crate's current hash.
+3. Publish `sound_dart` first, then `sound_flutter`, which depends on the
+   hosted `sound_dart`.
