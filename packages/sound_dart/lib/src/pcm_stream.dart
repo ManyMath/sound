@@ -37,10 +37,18 @@ class PcmStream {
     required this.sampleRate,
     this.chunkFrames = 2048,
     this.loop = false,
-  }) : assert(channels > 0, 'channels must be positive'),
-       assert(sampleRate > 0, 'sampleRate must be positive'),
-       assert(chunkFrames > 0, 'chunkFrames must be positive'),
-       _samples = samples;
+  }) : _samples = samples {
+    // Not just asserts: zero would divide by zero or never advance.
+    if (channels <= 0) {
+      throw ArgumentError.value(channels, 'channels', 'must be positive');
+    }
+    if (sampleRate <= 0) {
+      throw ArgumentError.value(sampleRate, 'sampleRate', 'must be positive');
+    }
+    if (chunkFrames <= 0) {
+      throw ArgumentError.value(chunkFrames, 'chunkFrames', 'must be positive');
+    }
+  }
 
   final Int16List _samples;
 
@@ -62,8 +70,10 @@ class PcmStream {
   final StreamController<Int16List> _controller =
       StreamController<Int16List>.broadcast();
   final Completer<void> _onDone = Completer<void>();
+  final Stopwatch _clock = Stopwatch();
   Timer? _timer;
   int _pos = 0; // interleaved sample index
+  int _sent = 0; // interleaved samples emitted, across loops
   bool _started = false;
   bool _done = false;
 
@@ -93,11 +103,28 @@ class PcmStream {
   Future<void> start() async {
     if (_started || _done) return;
     _started = true;
-    final period = Duration(
-      microseconds: chunkFrames * Duration.microsecondsPerSecond ~/ sampleRate,
-    );
-    _emit();
-    if (!_done) _timer = Timer.periodic(period, (_) => _emit());
+    _clock.start();
+    _pump();
+  }
+
+  // Timers have whole-millisecond resolution, so counting periodic ticks
+  // runs fractional-millisecond chunks too fast. Catch up against elapsed
+  // time, but yield between bounded batches so stop() can always run.
+  void _pump() {
+    final perSecond = sampleRate * channels;
+    var emitted = 0;
+    while (!_done &&
+        emitted < 64 &&
+        _sent * Duration.microsecondsPerSecond <=
+            _clock.elapsedMicroseconds * perSecond) {
+      _emit();
+      emitted++;
+    }
+    if (_done) return;
+    final dueMicros =
+        (_sent * Duration.microsecondsPerSecond + perSecond - 1) ~/ perSecond;
+    final waitMs = ((dueMicros - _clock.elapsedMicroseconds) / 1000).ceil();
+    _timer = Timer(Duration(milliseconds: waitMs < 0 ? 0 : waitMs), _pump);
   }
 
   void _emit() {
@@ -118,6 +145,7 @@ class PcmStream {
       if (!_controller.isClosed) {
         _controller.add(Int16List.sublistView(_samples, _pos, end));
       }
+      _sent += end - _pos;
       _pos = end;
     }
     if (_pos >= _samples.length && !loop) _finish();

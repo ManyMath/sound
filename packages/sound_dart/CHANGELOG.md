@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Pace PCM chunks against elapsed time so fractional-millisecond chunks do not
+  run fast, and bound catch-up work so looping streams remain cancellable.
+- Reject non-positive PCM channel counts, sample rates and chunk sizes at runtime.
+
 ## 0.0.1
 
 - Initial scaffolding.
