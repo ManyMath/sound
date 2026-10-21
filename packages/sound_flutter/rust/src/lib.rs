@@ -29,12 +29,18 @@ mod aaudio;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod coreaudio;
 
+#[cfg(any(target_os = "macos", target_os = "ios", test))]
+mod bounded_send;
+
 // The macOS output sink (feeds a named device, e.g. a virtual-mic loopback).
 #[cfg(target_os = "macos")]
 mod sink;
 
 #[cfg(target_os = "windows")]
 mod winmm;
+
+#[cfg(any(target_os = "windows", test))]
+mod winmm_name;
 
 #[cfg(target_os = "macos")]
 use sink::Sink as NamedOutputSink;

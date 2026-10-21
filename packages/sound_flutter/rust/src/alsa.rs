@@ -192,3 +192,75 @@ impl Drop for PcmPlayback<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static WRITTEN: Mutex<Vec<i16>> = Mutex::new(Vec::new());
+
+    // Takes at most 100 stereo frames per call, as when a signal or an
+    // underrun cuts a write short.
+    unsafe extern "C" fn short_writei(
+        _: *mut SndPcm,
+        buf: *const c_void,
+        frames: c_ulong,
+    ) -> c_long {
+        let n = frames.min(100);
+        let samples = std::slice::from_raw_parts(buf as *const i16, n as usize * 2);
+        WRITTEN.lock().unwrap().extend_from_slice(samples);
+        n as c_long
+    }
+    unsafe extern "C" fn fake_open(
+        _: *mut *mut SndPcm,
+        _: *const c_char,
+        _: c_int,
+        _: c_int,
+    ) -> c_int {
+        -1
+    }
+    unsafe extern "C" fn fake_set_params(
+        _: *mut SndPcm,
+        _: c_int,
+        _: c_int,
+        _: c_uint,
+        _: c_uint,
+        _: c_int,
+        _: c_uint,
+    ) -> c_int {
+        -1
+    }
+    unsafe extern "C" fn fake_recover(_: *mut SndPcm, err: c_int, _: c_int) -> c_int {
+        err
+    }
+    unsafe extern "C" fn fake_int(_: *mut SndPcm) -> c_int {
+        0
+    }
+    unsafe extern "C" fn fake_strerror(_: c_int) -> *const c_char {
+        std::ptr::null()
+    }
+
+    #[test]
+    fn write_finishes_a_chunk_after_short_writes() {
+        WRITTEN.lock().unwrap().clear();
+        let alsa = Alsa {
+            _lib: libloading::os::unix::Library::this().into(),
+            pcm_open: fake_open,
+            pcm_set_params: fake_set_params,
+            pcm_writei: short_writei,
+            pcm_recover: fake_recover,
+            pcm_drain: fake_int,
+            pcm_close: fake_int,
+            strerror: fake_strerror,
+        };
+        let pcm = PcmPlayback {
+            alsa: &alsa,
+            pcm: std::ptr::null_mut(),
+            channels: 2,
+        };
+        let samples: Vec<i16> = (0..2048 * 2).map(|i| i as i16).collect();
+        assert_eq!(pcm.write(&samples), Ok(2048));
+        assert_eq!(*WRITTEN.lock().unwrap(), samples);
+    }
+}

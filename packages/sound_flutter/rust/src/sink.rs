@@ -16,11 +16,13 @@
 
 use std::os::raw::{c_int, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use libloading::Library;
+
+use crate::bounded_send::send_or_stall;
 
 const K_LINEAR_PCM: u32 = u32::from_be_bytes(*b"lpcm");
 const K_PCM_FLAG_IS_FLOAT: u32 = 0x1;
@@ -486,25 +488,7 @@ impl Sink {
         self.ensure_started()?;
         let stride = FRAMES_PER_BUFFER as usize * self.channel.src_channels as usize;
         for chunk in samples.chunks(stride) {
-            let mut item = chunk.to_vec();
-            let deadline = Instant::now() + WRITE_STALL_TIMEOUT;
-            loop {
-                match self.tx.try_send(item) {
-                    Ok(()) => break,
-                    Err(TrySendError::Full(back)) => {
-                        if Instant::now() >= deadline {
-                            return Err("audio device stalled: the output stopped draining \
-                                 (device removed or failed?)"
-                                .into());
-                        }
-                        item = back;
-                        std::thread::sleep(Duration::from_millis(5));
-                    }
-                    Err(TrySendError::Disconnected(_)) => {
-                        return Err("audio channel closed".into());
-                    }
-                }
-            }
+            send_or_stall(&self.tx, chunk.to_vec(), WRITE_STALL_TIMEOUT)?;
         }
         Ok(samples.len() / self.channel.src_channels as usize)
     }

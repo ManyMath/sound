@@ -109,8 +109,8 @@ impl WinMM {
 
     /// Finds an output by its WinMM display name, case-insensitively. An
     /// exact match wins. Drivers may truncate names to 31 UTF-16 units, so
-    /// failing that, either side being a prefix of the other is accepted as
-    /// long as it picks out a single device.
+    /// failing that, a query prefix is accepted only when it selects one
+    /// device. Reverse-prefix matching requires a 31-unit truncated name.
     fn find_output_device(&self, wanted: &str) -> Result<u32, String> {
         let requested = wanted.trim();
         let wanted = requested.to_lowercase();
@@ -155,10 +155,7 @@ impl WinMM {
         }
         let prefixed: Vec<&(u32, String)> = devices
             .iter()
-            .filter(|(_, n)| {
-                let folded = n.to_lowercase();
-                folded.starts_with(&wanted) || wanted.starts_with(&folded)
-            })
+            .filter(|(_, n)| crate::winmm_name::is_name_prefix(&wanted, n))
             .collect();
         match prefixed.as_slice() {
             [(id, _)] => Ok(*id),
