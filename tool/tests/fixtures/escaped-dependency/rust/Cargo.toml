@@ -1,0 +1,5 @@
+[package]
+name = "keepass_flutter_native"
+version = "0.1.0"
+[dependencies]
+keepassxc-ffi = { path = "../../../rust/keepassxc-ffi" }

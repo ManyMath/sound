@@ -1,3 +1,8 @@
+## 0.0.2
+
+- Prepare a source-complete native payload with exact pub archive consumer verification.
+- Preserve canonical audio safety fixes while incorporating reviewed bounded backpressure and Windows device-name handling.
+
 # Changelog
 
 ## Unreleased

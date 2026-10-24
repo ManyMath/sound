@@ -31,3 +31,7 @@ target/
 *.swp
 .idea/
 .vscode/
+
+# Local Python gate caches
+__pycache__/
+*.pyc

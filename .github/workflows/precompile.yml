@@ -15,20 +15,77 @@ name: Precompile binaries
 
 on:
   workflow_dispatch:
-  push:
-    tags: ['v*']
 
-# build_tool creates the precompiled_<hash> release and uploads assets with
-# GITHUB_TOKEN, which is read-only by default on newer repositories.
+# Owner-only manual release preparation. Maintenance never dispatches this.
+# Write permission is limited to guarded release/upload jobs.
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: precompile
+  cancel-in-progress: false
 
 env:
   REPO: ManyMath/sound
   BUILD_TOOL: packages/sound_flutter/cargokit/build_tool
+  CRATE_DIR: packages/sound_flutter/rust
 
 jobs:
+  release:
+    permissions:
+      contents: write
+    name: Create release
+    # Only the url_prefix repository can publish, so forks skip this job,
+    # and with it every job that needs it.
+    if: github.event_name == 'workflow_dispatch' && github.server_url == 'https://github.com' && github.repository == 'ManyMath/sound'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+      - run: dart pub get
+        working-directory: ${{ env.BUILD_TOOL }}
+      - run: dart pub get --directory tool/signing
+      - name: Validate signing key before creating a release
+        env:
+          PRIVATE_KEY: ${{ secrets.CARGOKIT_PRIVATE_KEY }}
+        run: >-
+          dart --packages=tool/signing/.dart_tool/package_config.json
+          tool/signing/check_signing_key.dart "$CRATE_DIR/cargokit.yaml"
+      # cargokit gets or creates the release without retrying, so parallel
+      # build jobs would race to create it. Create it once here, named after
+      # the crate hash cargokit itself computes.
+      - name: Create the precompiled_<hash> release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cat > "$RUNNER_TEMP/crate_hash.dart" <<'EOF'
+          import 'package:build_tool/src/crate_hash.dart';
+
+          void main(List<String> args) => print(CrateHash.compute(args.single));
+          EOF
+          hash=$(dart --packages="$BUILD_TOOL/.dart_tool/package_config.json" \
+            "$RUNNER_TEMP/crate_hash.dart" "$GITHUB_WORKSPACE/$CRATE_DIR")
+          if [[ ! $hash =~ ^[0-9a-f]{32}$ ]]; then
+            echo "Unexpected crate hash: $hash" >&2
+            exit 1
+          fi
+          tag="precompiled_$hash"
+          if gh release view "$tag" --repo "$REPO" > /dev/null 2>&1; then
+            echo "$tag already exists"
+          else
+            # cargokit's own title and body. --latest=false keeps these
+            # releases out of the repository's "Latest" slot.
+            gh release create "$tag" --repo "$REPO" --target "$GITHUB_SHA" \
+              --title "Precompiled binaries ${hash:0:8}" \
+              --notes "Precompiled binaries for crate sound_cli, crate hash $hash." \
+              --latest=false
+          fi
+
+
   linux:
+    needs: release
+    permissions:
+      contents: write
     name: Precompile (Linux x86_64)
     runs-on: ubuntu-latest
     steps:
@@ -55,6 +112,9 @@ jobs:
             --target x86_64-unknown-linux-gnu
 
   android:
+    needs: release
+    permissions:
+      contents: write
     name: Precompile (Android ABIs)
     runs-on: ubuntu-latest
     steps:
@@ -83,6 +143,9 @@ jobs:
             --target i686-linux-android
 
   macos:
+    needs: release
+    permissions:
+      contents: write
     name: Precompile (macOS and iOS)
     runs-on: macos-latest
     steps:
@@ -106,6 +169,9 @@ jobs:
             --target x86_64-apple-ios
 
   windows:
+    needs: release
+    permissions:
+      contents: write
     name: Precompile (Windows)
     runs-on: windows-latest
     steps:

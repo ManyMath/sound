@@ -1,0 +1,8 @@
+name: sound_signing_preflight
+publish_to: none
+environment:
+  sdk: ^3.10.0
+dependencies:
+  ed25519_edwards: ^0.3.1
+  hex: ^0.2.0
+  yaml: ^3.1.3

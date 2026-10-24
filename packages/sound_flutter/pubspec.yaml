@@ -3,7 +3,7 @@ description: >-
   Sound for Flutter with the goal of no additional system dependencies.
   Integrates the `sound_dart` package and uses cargokit to build the native
   Rust audio library and use it via FFI.
-version: 0.0.1
+version: 0.0.2
 repository: https://github.com/ManyMath/sound
 issue_tracker: https://github.com/ManyMath/sound/issues
 topics:
@@ -21,7 +21,7 @@ resolution: workspace
 dependencies:
   flutter:
     sdk: flutter
-  sound_dart: ^0.0.1
+  sound_dart: ^0.0.2
 
 dev_dependencies:
   flutter_test:

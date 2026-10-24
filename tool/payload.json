@@ -1,0 +1,52 @@
+{
+  "dart_sdk": "3.13.2",
+  "packages": [
+    {
+      "name": "sound_dart",
+      "path": "packages/sound_dart",
+      "required": [
+        "LICENSE",
+        "lib/sound_dart.dart"
+      ]
+    },
+    {
+      "name": "sound_flutter",
+      "path": "packages/sound_flutter",
+      "required": [
+        "LICENSE",
+        "rust/Cargo.toml",
+        "rust/src/lib.rs",
+        "rust/src/bounded_send.rs",
+        "rust/src/winmm_name.rs",
+        "cargokit/cmake/cargokit.cmake",
+        "rust/LICENSE"
+      ],
+      "contracts": {
+        "linux/CMakeLists.txt": "apply_cargokit(${PROJECT_NAME} ../rust sound_cli",
+        "windows/CMakeLists.txt": "apply_cargokit(${PROJECT_NAME} ../rust sound_cli",
+        "android/build.gradle": "manifestDir = \"../rust\"",
+        "ios/sound_flutter.podspec": "build_pod.sh\" ../rust sound_cli",
+        "macos/sound_flutter.podspec": "build_pod.sh\" ../rust sound_cli"
+      }
+    }
+  ],
+  "flutter_package": "sound_flutter",
+  "dart_package": "sound_dart",
+  "hosted_dart_constraint": "^0.0.2",
+  "library_name": "libsound_cli.so",
+  "library_environment": "SOUND_DART_LIB",
+  "flutter_main": "import 'package:flutter/material.dart';\nimport 'package:sound_flutter/sound_flutter.dart';\nFuture<void> main() async { WidgetsFlutterBinding.ensureInitialized(); final backend = await SoundFlutter.ensureInitialized(); runApp(MaterialApp(home: Text(backend))); }\n",
+  "dart_main": "import 'dart:io';\nimport 'dart:typed_data';\nimport 'package:sound_dart/sound_dart.dart';\nFuture<void> main() async {\n  final backend = Sound.backend; await backend.initialize();\n  if (backend.name != 'ffi') throw StateError('native backend did not load');\n  final expected = File(Platform.environment['SOUND_DART_LIB']!).resolveSymbolicLinksSync();\n  final mappings = File('/proc/self/maps').readAsLinesSync().where((line) => line.contains('libsound_cli.so')).toList();\n  if (mappings.isEmpty || mappings.any((line) => !line.endsWith(' $expected'))) throw StateError('unexpected native mapping: $mappings');\n  final wav = Uint8List(52); final bytes = ByteData.sublistView(wav);\n  void ascii(int offset, String value) => wav.setRange(offset, offset + value.length, value.codeUnits);\n  ascii(0,'RIFF'); bytes.setUint32(4,44,Endian.little); ascii(8,'WAVE'); ascii(12,'fmt ');\n  bytes.setUint32(16,16,Endian.little); bytes.setUint16(20,1,Endian.little); bytes.setUint16(22,1,Endian.little);\n  bytes.setUint32(24,8000,Endian.little); bytes.setUint32(28,16000,Endian.little); bytes.setUint16(32,2,Endian.little); bytes.setUint16(34,16,Endian.little);\n  ascii(36,'data'); bytes.setUint32(40,8,Endian.little);\n  final playback = await Sound.load(SoundSource.bytes(wav, format:'wav'));\n  if (playback.state != PlaybackState.idle) throw StateError('unexpected initial state');\n  await playback.dispose();\n  if (playback.state != PlaybackState.disposed) throw StateError('disposal failed');\n  await Sound.reset();\n  print('Exact native library loaded; player initialization, idle load and disposal passed (no audio playback)');\n}\n",
+  "rust_toolchain": "stable",
+  "rust_targets": {
+    "linux": [
+      "x86_64-unknown-linux-gnu"
+    ],
+    "macos": [
+      "{host_arch}-apple-darwin"
+    ],
+    "windows": [
+      "{host_arch}-pc-windows-msvc"
+    ]
+  }
+}

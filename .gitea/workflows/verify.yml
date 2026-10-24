@@ -1,0 +1,62 @@
+name: Private Sound verification
+on:
+  push:
+    branches: [main, 'maintenance/**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  RUSTUP_TOOLCHAIN: 1.94.0
+  CARGO_HOME: ${{ runner.temp }}/sound-cargo-${{ github.run_id }}
+  CARGO_BUILD_JOBS: '3'
+  DASH__SUPPRESS_ANALYTICS: 'true'
+  FLUTTER_SUPPRESS_ANALYTICS: 'true'
+  CI: 'true'
+  DO_NOT_TRACK: '1'
+jobs:
+  linux:
+    runs-on: manymath-maintenance-linux-x64
+    timeout-minutes: 60
+    steps:
+      - name: Require private primary forge
+        env:
+          PRIMARY_SERVER: ${{ github.server_url }}
+        run: test "$PRIMARY_SERVER" = 'https://git.manymath.com'
+      - uses: actions/checkout@v4
+      - name: Record provisioned tools
+        run: |
+          python3 --version
+          dart --version
+          flutter --version
+          cargo --version
+      - name: Payload fixtures and signing preflight regression
+        run: |
+          python3 -m unittest discover -s tool/tests -v
+          dart pub get --directory tool/signing
+          dart --packages=tool/signing/.dart_tool/package_config.json tool/signing/check_signing_key_test.dart
+      - name: Native checks
+        run: |
+          cargo fmt --all --check --manifest-path packages/sound_flutter/rust/Cargo.toml
+          cargo clippy --locked --manifest-path packages/sound_flutter/rust/Cargo.toml --all-targets -- -D warnings
+          cargo test --locked --manifest-path packages/sound_flutter/rust/Cargo.toml
+      - name: Dart and Flutter checks
+        run: |
+          flutter pub get
+          dart format --output none --set-exit-if-changed packages/sound_dart packages/sound_flutter/lib packages/sound_flutter/example/lib
+          dart analyze packages/sound_dart
+          flutter analyze packages/sound_flutter
+          dart test packages/sound_dart
+          flutter test packages/sound_flutter/test
+          dart compile js packages/sound_dart/example/web_main.dart -o "$RUNNER_TEMP/sound_web.js"
+      - name: Source-only actual pub archives and native consumers
+        run: |
+          evidence_root="$(mktemp -d)"
+          python3 tool/native_payload.py --config tool/payload.json --mode candidate --output "$evidence_root/candidate"
+          python3 tool/hosted_dart_smoke.py --candidate "$evidence_root/candidate" --output "$evidence_root/hosted-dart"
+          SOUND_DART_LIB="$evidence_root/candidate/flutter-consumer/build/linux/x64/debug/bundle/lib/libsound_cli.so" dart test packages/sound_dart/test/pcm_tap_test.dart
+          cat "$evidence_root/candidate/evidence.json" "$evidence_root/hosted-dart/evidence.json"
+          echo "Private candidate archives and logs retained at $evidence_root"
+      - name: Example Linux build
+        working-directory: packages/sound_flutter/example
+        run: flutter build linux --debug
