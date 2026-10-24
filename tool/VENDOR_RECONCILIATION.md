@@ -30,3 +30,13 @@ cleanup and preserved final position. Keep WebAudio input/error handling,
 loop-position/replay behavior, volume-aware fade and explicit backend selection
 with initialization fallback. Vendor code adds no missing behavior in those
 files beyond PCM timing already superseded by e3880ab.
+
+The complete tracked vendor audit is `SOUND_VENDOR_DISPOSITION.json`: 257 files,
+211 byte-identical after native-path normalization, and 46 explicit dispositions
+with SHA256s. Metadata/build files retain canonical package-local Rust paths,
+SDK baselines and Gradle9 compatibility. Canonical tests cover the vendor's
+stop-while-connecting, unobserved errors, pre-play completion, silent pause/resume
+and PCM timing cases with additional lifecycle regressions. The sole vendor-only
+`assets/test_tone.wav` is unreferenced by Soundboard production code; the plugin
+unit test uses a fake bundle with supplied bytes. Do not reintroduce an unused
+public package asset. The original remains in Soundboard's immutable history.

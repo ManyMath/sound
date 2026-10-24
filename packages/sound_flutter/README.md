@@ -29,14 +29,15 @@ is set up for cargokit precompiled binaries:
 - `rust/cargokit.yaml` holds the public signing key and the
   release URL prefix.
 - `.github/workflows/precompile.yml` builds and uploads signed binaries to
-  `precompiled_<crate-hash>` releases on tag pushes. It needs a
+  `precompiled_<crate-hash>` releases only on an owner-triggered manual GitHub dispatch, after signing-key
+  validation and private rehearsal. Tag pushes do not publish. It needs a
   `CARGOKIT_PRIVATE_KEY` repository secret: the hex private key printed by
   `dart run build_tool gen-key` (keep it secret; never commit it).
 
 cargokit only uses a prebuilt binary when Rust isn't installed (or the app
 opts in with `use_precompiled_binaries: true` in its `cargokit_options.yaml`)
 and a signed release for the current crate exists; otherwise it builds from
-source. The workflow publishes binaries for Linux x86_64, Android, macOS,
+source. The owner-stage workflow targets binaries for Linux x86_64, Android, macOS,
 iOS (device and simulator) and Windows x86_64.
 
 ## Requirements

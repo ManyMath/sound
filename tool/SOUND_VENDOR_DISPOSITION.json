@@ -1,0 +1,378 @@
+{
+  "vendor_repository_revision": "b0fa346d31d72d648a7bc427a8f695743b57d358",
+  "vendor_prefix": "sound/",
+  "canonical_revision": "980a0c9ddc90b7105aff589a070abd5b1e7a2b30",
+  "normalization": "native/sound_cli/ -> packages/sound_flutter/rust/",
+  "vendor_files": 257,
+  "unchanged_after_normalization": 211,
+  "different_or_vendor_only": [
+    {
+      "vendor": ".gitignore",
+      "canonical": ".gitignore",
+      "status": "different",
+      "vendor_sha256": "e3d2793016e76839d9fe61a3c327b66d50cdaa17e43b41f4f826ecc8c0c9c31e",
+      "canonical_sha256": "27bce017eca58e184c3e99bf1562cf2d00b046f9f2f8a40c3863ef5d174ddc16",
+      "disposition": "Canonical documentation, release preparation and local cache ignores supersede vendor descriptions."
+    },
+    {
+      "vendor": "README.md",
+      "canonical": "README.md",
+      "status": "different",
+      "vendor_sha256": "fec247b916cd9e6f8024204666347c1a31572d15e1c08ff5b325f1e3f27b763f",
+      "canonical_sha256": "74be105e457d05eb172a4aaf873fd4e2303586fe82ad8677a59c21c55bb89191",
+      "disposition": "Canonical documentation, release preparation and local cache ignores supersede vendor descriptions."
+    },
+    {
+      "vendor": "native/sound_cli/Cargo.toml",
+      "canonical": "packages/sound_flutter/rust/Cargo.toml",
+      "status": "different",
+      "vendor_sha256": "cba20481713c2915b4833e2cac6a7ef967e1e823674e7f47d985d00b88f8790d",
+      "canonical_sha256": "b675859bf08e105bfe42a0134c0aa011e704c74e48024df8f373fca13c06196d",
+      "disposition": "Canonical documentation, release preparation and local cache ignores supersede vendor descriptions."
+    },
+    {
+      "vendor": "native/sound_cli/src/aaudio.rs",
+      "canonical": "packages/sound_flutter/rust/src/aaudio.rs",
+      "status": "different",
+      "vendor_sha256": "1f72e4a2d36af5c70986be164d8ee9a57493dd11b213a9e608613c59d5f12a68",
+      "canonical_sha256": "bcfbad8068ea902a0e1eb0ea57757784fb57904a256f25ca96cbeadaae9d23fd",
+      "disposition": "Reviewed runtime source: selective native carryovers and canonical newer behavior retained; see VENDOR_RECONCILIATION.md."
+    },
+    {
+      "vendor": "native/sound_cli/src/alsa.rs",
+      "canonical": "packages/sound_flutter/rust/src/alsa.rs",
+      "status": "different",
+      "vendor_sha256": "71ac11ca2ada92f9bf33884f28a917e30f14a59ccab08df057536ce05c696f18",
+      "canonical_sha256": "fff93fdd83c324ef12ccd110c91a47b709cbbe39c53affbd4b85762b37e7cf56",
+      "disposition": "Reviewed runtime source: selective native carryovers and canonical newer behavior retained; see VENDOR_RECONCILIATION.md."
+    },
+    {
+      "vendor": "native/sound_cli/src/bounded_send.rs",
+      "canonical": "packages/sound_flutter/rust/src/bounded_send.rs",
+      "status": "different",
+      "vendor_sha256": "fb63927f4e6bd4340fda9ca073cf87c3bf9f84b19dbe43356b50d2d082cd0e24",
+      "canonical_sha256": "a3b38d5b779540cfef1d3bda6a557663f9ef635c7e7d06df12c30a0952dbf9ad",
+      "disposition": "Reviewed runtime source: selective native carryovers and canonical newer behavior retained; see VENDOR_RECONCILIATION.md."
+    },
+    {
+      "vendor": "native/sound_cli/src/coreaudio.rs",
+      "canonical": "packages/sound_flutter/rust/src/coreaudio.rs",
+      "status": "different",
+      "vendor_sha256": "d02ac8b22ef85f0a19c7ff7564b0a3b1ce72bf5a89e1de3c2f89bc14f286a5de",
+      "canonical_sha256": "036882af789b19bf985128d615ed94d2e42af6321b05e4f1d90a1eaa76aa3c29",
+      "disposition": "Reviewed runtime source: selective native carryovers and canonical newer behavior retained; see VENDOR_RECONCILIATION.md."
+    },
+    {
+      "vendor": "native/sound_cli/src/decode.rs",
+      "canonical": "packages/sound_flutter/rust/src/decode.rs",
+      "status": "different",
+      "vendor_sha256": "10d19d87c382a0308e7e0dd598e30942b081315bf1bbb12c129e280cdc83064e",
+      "canonical_sha256": "956bbb2030e147ada222543d7d1e01d3a2afaa5e3362e1ec78b4cd1e0f3e4c39",
+      "disposition": "Reviewed runtime source: selective native carryovers and canonical newer behavior retained; see VENDOR_RECONCILIATION.md."
+    },
+    {
+      "vendor": "native/sound_cli/src/lib.rs",
+      "canonical": "packages/sound_flutter/rust/src/lib.rs",
+      "status": "different",
+      "vendor_sha256": "2a4513eca242135d1aa48a9d27de974cba3999fc632e8e67ddb9ea143eee3dd3",
+      "canonical_sha256": "c1c979b0cfa44b78a8964ed10bd7ccbaa9a12ddbfbf0b382c55c4c04f288d89a",
+      "disposition": "Reviewed runtime source: selective native carryovers and canonical newer behavior retained; see VENDOR_RECONCILIATION.md."
+    },
+    {
+      "vendor": "native/sound_cli/src/net.rs",
+      "canonical": "packages/sound_flutter/rust/src/net.rs",
+      "status": "different",
+      "vendor_sha256": "88136ccb899af7a01c1d966a8da6fb0e98b4836bc638aed79e02d3db10215655",
+      "canonical_sha256": "4df2b1647d6556a3d6c6878284c2ade5241e8fe52e4523832b1514323fc65496",
+      "disposition": "Reviewed runtime source: selective native carryovers and canonical newer behavior retained; see VENDOR_RECONCILIATION.md."
+    },
+    {
+      "vendor": "native/sound_cli/src/sink.rs",
+      "canonical": "packages/sound_flutter/rust/src/sink.rs",
+      "status": "different",
+      "vendor_sha256": "5d7e8b60f7b806dd19f3d19800df300d60f6a05ef513ca1c9c95d8d06cec1098",
+      "canonical_sha256": "90d2686f7efea195d1351fc597bf25f5ecb6d5a28bf882886d516eaa2afa45f4",
+      "disposition": "Reviewed runtime source: selective native carryovers and canonical newer behavior retained; see VENDOR_RECONCILIATION.md."
+    },
+    {
+      "vendor": "native/sound_cli/src/streaming_source.rs",
+      "canonical": "packages/sound_flutter/rust/src/streaming_source.rs",
+      "status": "different",
+      "vendor_sha256": "b4fe5f717823c12b109cdadd3cfd91086677df8737a1454ba1260e8a8de10046",
+      "canonical_sha256": "ce612e5799846d08508ef3783cc0a32e2153531b20370141cba6eefee54e2880",
+      "disposition": "Reviewed runtime source: selective native carryovers and canonical newer behavior retained; see VENDOR_RECONCILIATION.md."
+    },
+    {
+      "vendor": "native/sound_cli/src/winmm.rs",
+      "canonical": "packages/sound_flutter/rust/src/winmm.rs",
+      "status": "different",
+      "vendor_sha256": "e533ef022d733903d6ca06725c308a4fa0f8af99234a56b0d33891db4af35b7c",
+      "canonical_sha256": "3fde88b7bc3fb2e8ac318d76a827ced51bc77a2fde476823fda2bbc0b9b5de16",
+      "disposition": "Reviewed runtime source: selective native carryovers and canonical newer behavior retained; see VENDOR_RECONCILIATION.md."
+    },
+    {
+      "vendor": "native/sound_cli/src/winmm_name.rs",
+      "canonical": "packages/sound_flutter/rust/src/winmm_name.rs",
+      "status": "different",
+      "vendor_sha256": "3f8fd8d454e538c384dec90cfd363098d80731e25d8469873fae58c368303354",
+      "canonical_sha256": "ebf772d50e875a07cd544121632aaad3dde392fe8578352a23e7eef6fc92457a",
+      "disposition": "Reviewed runtime source: selective native carryovers and canonical newer behavior retained; see VENDOR_RECONCILIATION.md."
+    },
+    {
+      "vendor": "packages/sound_dart/CHANGELOG.md",
+      "canonical": "packages/sound_dart/CHANGELOG.md",
+      "status": "different",
+      "vendor_sha256": "1f9a5861bf99d03b8711b640387c9e20b74767a443bb7e3d96ccd271840a4ef1",
+      "canonical_sha256": "dfbe7b08bf84cfe0c44adcd1d8cb675f3839fee90e229ae3f1716723388f9b3e",
+      "disposition": "Canonical documentation, release preparation and local cache ignores supersede vendor descriptions."
+    },
+    {
+      "vendor": "packages/sound_dart/README.md",
+      "canonical": "packages/sound_dart/README.md",
+      "status": "different",
+      "vendor_sha256": "28fb00bdb06670f5c1a5558719bcca3c08b114b45d8514345596c29958ee2866",
+      "canonical_sha256": "22c2379e58ce9be295e88b48b8179726372605e979e870726f7c30939fdcd314",
+      "disposition": "Canonical documentation, release preparation and local cache ignores supersede vendor descriptions."
+    },
+    {
+      "vendor": "packages/sound_dart/example/sound_example.dart",
+      "canonical": "packages/sound_dart/example/sound_example.dart",
+      "status": "different",
+      "vendor_sha256": "0dedeb94491681e1c7364508f47b180f3f470bd5706158ff9fd70a0669785bd0",
+      "canonical_sha256": "95b28b0e87f89c5e6407ebf05765e9248bf98093e6a44dca089ed7499500bf78",
+      "disposition": "Canonical source relocation comments, Flutter Gradle migration flags and simplified web comments; no vendor behavior lost."
+    },
+    {
+      "vendor": "packages/sound_dart/lib/src/backends/native/native_backend_ffi.dart",
+      "canonical": "packages/sound_dart/lib/src/backends/native/native_backend_ffi.dart",
+      "status": "different",
+      "vendor_sha256": "1cddd65e0005f7754b288954b0c37a755c4d2568ed8f509849500f8e3a4f93d9",
+      "canonical_sha256": "e03d1c391646412b9b8c53f1f3a902e4283655ddf3771635c94e0dc657b02bcc",
+      "disposition": "Reviewed runtime source: selective native carryovers and canonical newer behavior retained; see VENDOR_RECONCILIATION.md."
+    },
+    {
+      "vendor": "packages/sound_dart/lib/src/backends/native/native_backend_web.dart",
+      "canonical": "packages/sound_dart/lib/src/backends/native/native_backend_web.dart",
+      "status": "different",
+      "vendor_sha256": "3e13560df261982f316e708f318b87d6e9df1583e161f9e2f860d9f4b9fac3e4",
+      "canonical_sha256": "ea20212c04f9c423f13a1a0dd28d0a22577c157be746b04a4737fd4668b0f454",
+      "disposition": "Reviewed runtime source: selective native carryovers and canonical newer behavior retained; see VENDOR_RECONCILIATION.md."
+    },
+    {
+      "vendor": "packages/sound_dart/lib/src/backends/silent_backend.dart",
+      "canonical": "packages/sound_dart/lib/src/backends/silent_backend.dart",
+      "status": "different",
+      "vendor_sha256": "467a6b2209e5e36f03267618ed6a9436ac09c538727b6fd026de76bf3a5d7a60",
+      "canonical_sha256": "6df6a7b8ba9e6a1c4da05a055954bf910182c3b731c889b6df356da4ac547b97",
+      "disposition": "Reviewed runtime source: selective native carryovers and canonical newer behavior retained; see VENDOR_RECONCILIATION.md."
+    },
+    {
+      "vendor": "packages/sound_dart/lib/src/fade.dart",
+      "canonical": "packages/sound_dart/lib/src/fade.dart",
+      "status": "different",
+      "vendor_sha256": "4b731e133acc52e99189302eb5f8869013986bf387c6e35583e004a2f179b73b",
+      "canonical_sha256": "3d34c19ea2af4ab541cdb178ef608cc028e394e3a0fa06140282291c36562b03",
+      "disposition": "Reviewed runtime source: selective native carryovers and canonical newer behavior retained; see VENDOR_RECONCILIATION.md."
+    },
+    {
+      "vendor": "packages/sound_dart/lib/src/pcm_stream.dart",
+      "canonical": "packages/sound_dart/lib/src/pcm_stream.dart",
+      "status": "different",
+      "vendor_sha256": "35b3204003f874e707281637a4d96200c35efc8ad60fae8629feb218f496dca2",
+      "canonical_sha256": "d2b92c7883012b7026b030a6a6b512d97eefac4d2bb2a6649d37c82b98a2bf4e",
+      "disposition": "Reviewed runtime source: selective native carryovers and canonical newer behavior retained; see VENDOR_RECONCILIATION.md."
+    },
+    {
+      "vendor": "packages/sound_dart/lib/src/playback.dart",
+      "canonical": "packages/sound_dart/lib/src/playback.dart",
+      "status": "different",
+      "vendor_sha256": "a04058cc641e99a9edbe1ac6138ac3279f0f6a1877e68f3492866228ebd170da",
+      "canonical_sha256": "e42752fb74299e754c1a6d3b59900f344d360315cfd7a660c302fe5742ef5fc7",
+      "disposition": "Reviewed runtime source: selective native carryovers and canonical newer behavior retained; see VENDOR_RECONCILIATION.md."
+    },
+    {
+      "vendor": "packages/sound_dart/lib/src/sound.dart",
+      "canonical": "packages/sound_dart/lib/src/sound.dart",
+      "status": "different",
+      "vendor_sha256": "cf3de16df3772d36b1972160578e73ca877f071222aab408c26e4350190de64a",
+      "canonical_sha256": "e8f76507b2d08e335a74c0028bf8bff3222f373c662e95a80d84df9ae612b2c6",
+      "disposition": "Reviewed runtime source: selective native carryovers and canonical newer behavior retained; see VENDOR_RECONCILIATION.md."
+    },
+    {
+      "vendor": "packages/sound_dart/lib/src/sound_backend.dart",
+      "canonical": "packages/sound_dart/lib/src/sound_backend.dart",
+      "status": "different",
+      "vendor_sha256": "f03736d8992458972bba76dbc1b2e7c891dd4be5fa837958160950a6a6b8c6e1",
+      "canonical_sha256": "cab93af1ef3ccc8704e310492b0b7426affc9cfac9bf572fa44b0badff1cbbc8",
+      "disposition": "Reviewed runtime source: selective native carryovers and canonical newer behavior retained; see VENDOR_RECONCILIATION.md."
+    },
+    {
+      "vendor": "packages/sound_dart/pubspec.yaml",
+      "canonical": "packages/sound_dart/pubspec.yaml",
+      "status": "different",
+      "vendor_sha256": "08e311082210cd5052f314ccf3ce467fe551eb7f3fe0b0a5c6939ca9c567f8a2",
+      "canonical_sha256": "84f7877001d8467d8bd3e083a07111befe40d5b68003972bf6e62b8b93b10740",
+      "disposition": "Canonical candidate versions/dependency minimums/workspace and integration-test setup supersede vendor metadata."
+    },
+    {
+      "vendor": "packages/sound_dart/test/fade_test.dart",
+      "canonical": "packages/sound_dart/test/fade_test.dart",
+      "status": "different",
+      "vendor_sha256": "128b3d0635dcff7f2eeffa6943d47404b76ac8ee302e9e9cf24a84b8e760a7bb",
+      "canonical_sha256": "c60328db2eb062cb5357f3f50c2f9b97fba0b5feccc335b29664d679edb81520",
+      "disposition": "Canonical coverage includes equivalent vendor behavior and newer lifecycle/PCM/volume/backend regressions. Retain canonical tests."
+    },
+    {
+      "vendor": "packages/sound_dart/test/ffi_playback_test.dart",
+      "canonical": "packages/sound_dart/test/ffi_playback_test.dart",
+      "status": "different",
+      "vendor_sha256": "26880ca75b7ae65e91e1c2f61542fcc2e9a171dc825605ab9a8c2ff4cfa27317",
+      "canonical_sha256": "a3ba3cda029ffec3635d1e3d330696b39ca3f92ab1603fb888867007acfc4533",
+      "disposition": "Canonical coverage includes equivalent vendor behavior and newer lifecycle/PCM/volume/backend regressions. Retain canonical tests."
+    },
+    {
+      "vendor": "packages/sound_dart/test/pcm_tap_test.dart",
+      "canonical": "packages/sound_dart/test/pcm_tap_test.dart",
+      "status": "different",
+      "vendor_sha256": "7756128456bae4a1e35a24138103a2fcb2692cfc80195728fbaa5a5bdb2419e5",
+      "canonical_sha256": "26fb4a7035796d2546b1213d15f8903c81cc5fd30cb14fe88df53b92a49eec52",
+      "disposition": "Canonical coverage includes equivalent vendor behavior and newer lifecycle/PCM/volume/backend regressions. Retain canonical tests."
+    },
+    {
+      "vendor": "packages/sound_dart/test/sound_test.dart",
+      "canonical": "packages/sound_dart/test/sound_test.dart",
+      "status": "different",
+      "vendor_sha256": "ad6ad27c82b9235c689551806474a7b9d65349b1574657d15df196125c40e933",
+      "canonical_sha256": "212b684d51d6d83a6d33938018d46ac6eb32d82a451efc439f64640389b16bf6",
+      "disposition": "Canonical coverage includes equivalent vendor behavior and newer lifecycle/PCM/volume/backend regressions. Retain canonical tests."
+    },
+    {
+      "vendor": "packages/sound_flutter/CHANGELOG.md",
+      "canonical": "packages/sound_flutter/CHANGELOG.md",
+      "status": "different",
+      "vendor_sha256": "6f0266120201064073606c993e28317b4353419fe62e8aaedacd70652778de8c",
+      "canonical_sha256": "50064e1a8dc69c9a403c4de540418c4bb98446deb7fcc380295f1fa1077b33bc",
+      "disposition": "Canonical documentation, release preparation and local cache ignores supersede vendor descriptions."
+    },
+    {
+      "vendor": "packages/sound_flutter/README.md",
+      "canonical": "packages/sound_flutter/README.md",
+      "status": "different",
+      "vendor_sha256": "68ba3eafb553091cc78fcd22de5c62edd41a3b947c7f9e3f5cdd7080a869ffc0",
+      "canonical_sha256": "cce58f1f1bfc5d3ce846a3e065623fea9d1096c6c5c839b5635ea159278b3fc2",
+      "disposition": "Canonical documentation, release preparation and local cache ignores supersede vendor descriptions."
+    },
+    {
+      "vendor": "packages/sound_flutter/android/build.gradle",
+      "canonical": "packages/sound_flutter/android/build.gradle",
+      "status": "different",
+      "vendor_sha256": "a3523b6d34d2bc64ff57d097303b5cb88c16b36a81cf410ceedd8eac5374b330",
+      "canonical_sha256": "259f44ba09a0a9acb1a850cf1941116c779e3a43406a23f5231fec1e603a9a09",
+      "disposition": "Retain canonical in-package Rust references, SDK baseline and candidate versions."
+    },
+    {
+      "vendor": "packages/sound_flutter/assets/test_tone.wav",
+      "canonical": "packages/sound_flutter/assets/test_tone.wav",
+      "status": "vendor-only",
+      "vendor_sha256": "b68f859bf2b15b8e6acf234edea40347d114dfe0c2902e1dcf7f88cf91b52a97",
+      "canonical_sha256": null,
+      "disposition": "Unused package test fixture; no Soundboard production reference. Fake AssetBundle tests supply their own bytes. Keep historical vendor source; do not add unused asset to canonical public package."
+    },
+    {
+      "vendor": "packages/sound_flutter/cargokit/build_pod.sh",
+      "canonical": "packages/sound_flutter/cargokit/build_pod.sh",
+      "status": "different",
+      "vendor_sha256": "a8b0a7a8cac48d2a70c146a1ca1f2406f14f9628883ac8291d212c11f941f568",
+      "canonical_sha256": "d8c00e86ea84c9d7abde7c47e53e3d4291c6b0a647301aa372a9d4d07a510119",
+      "disposition": "Retain canonical Gradle9 compatibility and removed environment dump; preserve in explicit Cargokit patch inventory."
+    },
+    {
+      "vendor": "packages/sound_flutter/cargokit/gradle/plugin.gradle",
+      "canonical": "packages/sound_flutter/cargokit/gradle/plugin.gradle",
+      "status": "different",
+      "vendor_sha256": "c349bd68502ea001a39c77859a0c75d0fc6894d5cfba2f0fcd25c08589ac3287",
+      "canonical_sha256": "a62e1ed95a3d57403b5a0bc177335dc229a2cadb3d354c3cc3d6257d61342338",
+      "disposition": "Retain canonical Gradle9 compatibility and removed environment dump; preserve in explicit Cargokit patch inventory."
+    },
+    {
+      "vendor": "packages/sound_flutter/example/android/gradle.properties",
+      "canonical": "packages/sound_flutter/example/android/gradle.properties",
+      "status": "different",
+      "vendor_sha256": "5539cf5f17c53900a72cf0065e450f0a8ba5b929dd2b364724c1296d0285d9dc",
+      "canonical_sha256": "4922e39cd2ea910bd97156fd4320b0be9217df262fc45435ce408bad534a20d0",
+      "disposition": "Canonical source relocation comments, Flutter Gradle migration flags and simplified web comments; no vendor behavior lost."
+    },
+    {
+      "vendor": "packages/sound_flutter/example/pubspec.yaml",
+      "canonical": "packages/sound_flutter/example/pubspec.yaml",
+      "status": "different",
+      "vendor_sha256": "cff2fdac0db2dc457b35e813a40f43e702fdb4257f3d3008bba79fb6db83cbb7",
+      "canonical_sha256": "360af7569d1a73a1c428fa54fee96f1039ca5900f06ccaae6092846ed45f1b55",
+      "disposition": "Canonical candidate versions/dependency minimums/workspace and integration-test setup supersede vendor metadata."
+    },
+    {
+      "vendor": "packages/sound_flutter/example/web/index.html",
+      "canonical": "packages/sound_flutter/example/web/index.html",
+      "status": "different",
+      "vendor_sha256": "cee3e26aacb383971f7d3a69eeb5e195741f9dba10590009b024d41906ec26a6",
+      "canonical_sha256": "dc3adadb6495724cb790f06b751f156654a652797eb7981eba24c044c60ec804",
+      "disposition": "Canonical source relocation comments, Flutter Gradle migration flags and simplified web comments; no vendor behavior lost."
+    },
+    {
+      "vendor": "packages/sound_flutter/ios/sound_flutter.podspec",
+      "canonical": "packages/sound_flutter/ios/sound_flutter.podspec",
+      "status": "different",
+      "vendor_sha256": "da6571f69a0f94424166c8ed6c595a265f1937f104019298793f1224fce3337f",
+      "canonical_sha256": "d4371e721b9562b8f8fc03d64ade9937eaf9f1b5ca78d6f51a4e9322ecc0c64f",
+      "disposition": "Retain canonical in-package Rust references, SDK baseline and candidate versions."
+    },
+    {
+      "vendor": "packages/sound_flutter/lib/sound_flutter.dart",
+      "canonical": "packages/sound_flutter/lib/sound_flutter.dart",
+      "status": "different",
+      "vendor_sha256": "14ab7235345e6b64cba8fe0c7c1200c196be79f47c57fecb778e432ed3cae30f",
+      "canonical_sha256": "28f82589ac84e420cb7e268a5c5757087156459948d2c4215c314b98d6be2a0d",
+      "disposition": "Canonical documentation, release preparation and local cache ignores supersede vendor descriptions."
+    },
+    {
+      "vendor": "packages/sound_flutter/linux/CMakeLists.txt",
+      "canonical": "packages/sound_flutter/linux/CMakeLists.txt",
+      "status": "different",
+      "vendor_sha256": "ace3c1e207986f7ffa1a169d39569dea58fe84b192224054584ae9bf75967b88",
+      "canonical_sha256": "89a8e47f2d5fbb9c39ad1fb02a9a2e2bbfd1d702847d0b64403ffe4156439eeb",
+      "disposition": "Retain canonical in-package Rust references, SDK baseline and candidate versions."
+    },
+    {
+      "vendor": "packages/sound_flutter/macos/sound_flutter.podspec",
+      "canonical": "packages/sound_flutter/macos/sound_flutter.podspec",
+      "status": "different",
+      "vendor_sha256": "bdfbc5fca9cb8459e8c99fc86e3cd27392fd6827459090b4d4f8564dd3cfa147",
+      "canonical_sha256": "c221a05a31a44700e6e2dfa2970f18e1329bfe7ea8b74766697abf8776f45988",
+      "disposition": "Retain canonical in-package Rust references, SDK baseline and candidate versions."
+    },
+    {
+      "vendor": "packages/sound_flutter/pubspec.yaml",
+      "canonical": "packages/sound_flutter/pubspec.yaml",
+      "status": "different",
+      "vendor_sha256": "9a37566fe43444ca251d304b16dc56b0a6f3aa56396e34dbd023ad562009b305",
+      "canonical_sha256": "140284fa0303467d7456618a43ef7d242071bceceb612fe0590a3ecdf8727982",
+      "disposition": "Canonical candidate versions/dependency minimums/workspace and integration-test setup supersede vendor metadata."
+    },
+    {
+      "vendor": "packages/sound_flutter/test/sound_flutter_test.dart",
+      "canonical": "packages/sound_flutter/test/sound_flutter_test.dart",
+      "status": "different",
+      "vendor_sha256": "c5ce219b1553cc0a3be4b7d53ca26200540de1ff0b4885f5ce42b86e5347f84a",
+      "canonical_sha256": "1d2efddbf91a67a068a569da8296911a771c2ddfd488484e6612c2a0e8237563",
+      "disposition": "Canonical coverage includes equivalent vendor behavior and newer lifecycle/PCM/volume/backend regressions. Retain canonical tests."
+    },
+    {
+      "vendor": "packages/sound_flutter/windows/CMakeLists.txt",
+      "canonical": "packages/sound_flutter/windows/CMakeLists.txt",
+      "status": "different",
+      "vendor_sha256": "9e4e2528aa466af1303fa10ac8620ab7c684d2a0dc8406b02d722c6e1dfe9ad3",
+      "canonical_sha256": "92077ed8279cbc482000869b00daa521fc5b446275b7396e27f7bddcbfa6bf8b",
+      "disposition": "Retain canonical in-package Rust references, SDK baseline and candidate versions."
+    }
+  ]
+}

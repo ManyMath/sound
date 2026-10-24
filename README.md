@@ -52,8 +52,10 @@ dart run melos run test           # Dart + Flutter tests
 dart run melos run native:test    # Rust crate tests
 ```
 
-`tool/consumer_build.sh linux apk` builds a fresh `flutter create` app
-against the two packages exported the way pub.dev ships them, and
+`tool/native_payload.py --config tool/payload.json --mode candidate --output /tmp/sound-candidate`
+verifies actual pub-selected archives in a fresh Flutter consumer. See
+[tool/README.md](tool/README.md) for legacy hosted compatibility and platform gates.
+The older `tool/consumer_build.sh` is only a Git-export comparison smoke, and
 `flutter test integration_test -d <device>` (from
 `packages/sound_flutter/example`) runs the on-device playback tests.
 
@@ -61,7 +63,10 @@ against the two packages exported the way pub.dev ships them, and
 
 1. Run the example and the integration tests on each platform's real
    hardware, Windows and Apple devices included.
-2. Push a `v*` tag to GitHub so `.github/workflows/precompile.yml` publishes
-   the signed prebuilt libraries for the crate's current hash.
-3. Publish `sound_dart` first, then `sound_flutter`, which depends on the
-   hosted `sound_dart`.
+2. After private rehearsal, the owner may manually mirror the reviewed source
+   and dispatch `.github/workflows/precompile.yml` on GitHub. Tag pushes do not
+   release anything. The guarded workflow validates signing-key identity before
+   creating a release; maintenance never executes this public step.
+3. Owner publication must release `sound_dart` 0.0.2 first, then `sound_flutter`,
+   which requires its `Sound.initialize` API. Public publication is not performed
+   by the private maintenance gates.
