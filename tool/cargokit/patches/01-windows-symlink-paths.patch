@@ -1,0 +1,39 @@
+--- a/cmake/cargokit.cmake
++++ b/cmake/cargokit.cmake
+@@ -33,10 +33,20 @@
+         set(CARGOKIT_TARGET_PLATFORM "windows-x64")
+     endif()
+ 
++    if(WIN32)
++        # Resolve symlinks in CMAKE_CURRENT_SOURCE_DIR first; on Windows ".."
++        # traversal does not cross symlink targets so the relative manifest_dir
++        # path would land in the wrong place.
++        execute_process(COMMAND powershell -ExecutionPolicy Bypass -File "${cargokit_cmake_root}/cmake/resolve_symlinks.ps1" "${CMAKE_CURRENT_SOURCE_DIR}" OUTPUT_VARIABLE _resolved_src OUTPUT_STRIP_TRAILING_WHITESPACE)
++        set(_manifest_dir "${_resolved_src}/${manifest_dir}")
++    else()
++        set(_manifest_dir "${CMAKE_CURRENT_SOURCE_DIR}/${manifest_dir}")
++    endif()
++
+     set(CARGOKIT_ENV
+         "CARGOKIT_CMAKE=${CMAKE_COMMAND}"
+         "CARGOKIT_CONFIGURATION=$<CONFIG>"
+-        "CARGOKIT_MANIFEST_DIR=${CMAKE_CURRENT_SOURCE_DIR}/${manifest_dir}"
++        "CARGOKIT_MANIFEST_DIR=${_manifest_dir}"
+         "CARGOKIT_TARGET_TEMP_DIR=${CARGOKIT_TEMP_DIR}"
+         "CARGOKIT_OUTPUT_DIR=${CARGOKIT_OUTPUT_DIR}"
+         "CARGOKIT_TARGET_PLATFORM=${CARGOKIT_TARGET_PLATFORM}"
+--- a/cmake/resolve_symlinks.ps1
++++ b/cmake/resolve_symlinks.ps1
+@@ -23,8 +23,10 @@
+         }
+ 
+         $item = Get-Item $realPath
+-        if ($item.LinkTarget) {
+-            $realPath = $item.LinkTarget.Replace('\', '/')
++        # LinkTarget exists in PowerShell 7+; Target in Windows PowerShell 5.x.
++        $link = if ($item.LinkTarget) { $item.LinkTarget } elseif ($item.Target) { $item.Target[0] } else { $null }
++        if ($link) {
++            $realPath = $link.Replace('\', '/')
+         }
+     }
+     $realPath

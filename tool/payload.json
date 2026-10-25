@@ -19,7 +19,8 @@
         "rust/src/bounded_send.rs",
         "rust/src/winmm_name.rs",
         "cargokit/cmake/cargokit.cmake",
-        "rust/LICENSE"
+        "rust/LICENSE",
+        "cargokit/VENDOR_PROVENANCE.json"
       ],
       "contracts": {
         "linux/CMakeLists.txt": "apply_cargokit(${PROJECT_NAME} ../rust sound_cli",
@@ -27,7 +28,10 @@
         "android/build.gradle": "manifestDir = \"../rust\"",
         "ios/sound_flutter.podspec": "build_pod.sh\" ../rust sound_cli",
         "macos/sound_flutter.podspec": "build_pod.sh\" ../rust sound_cli"
-      }
+      },
+      "provenance": [
+        "cargokit/VENDOR_PROVENANCE.json"
+      ]
     }
   ],
   "flutter_package": "sound_flutter",

@@ -1,0 +1,11 @@
+--- a/build_pod.sh
++++ b/build_pod.sh
+@@ -11,7 +11,7 @@
+ 
+ export PATH=${NEW_PATH%?} # remove trailing :
+ 
+-env
++# Do not print caller environment: it may contain CI secrets.
+ 
+ # Platform name (macosx, iphoneos, iphonesimulator)
+ export CARGOKIT_DARWIN_PLATFORM_NAME=$PLATFORM_NAME
