@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -52,6 +53,26 @@ class SyncTests(unittest.TestCase):
         self.assertEqual((self.output / sync.PROVENANCE).read_bytes(), (second / sync.PROVENANCE).read_bytes())
         self.assertFalse((self.output / 'omitted.lock').exists())
         self.assertFalse((self.output / '.git').exists())
+
+    def test_provenance_keeps_full_identity_and_visible_archive_subset(self):
+        provenance = self.build()
+        self.assertIn('.vendored-revision', provenance['installed_files_sha256'])
+        self.assertNotIn('.vendored-revision', provenance['files_sha256'])
+        self.assertEqual(provenance['publication_omitted_hidden_files'], ['.vendored-revision'])
+        self.assertIn('build.sh', provenance['files_sha256'])
+
+    def test_cli_rejects_symlink_installed_root(self):
+        self.build()
+        link = self.root / 'linked-installation'
+        try:
+            link.symlink_to(self.output, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest('Host cannot create directory symlinks')
+        result = subprocess.run([sys.executable, str(Path(sync.__file__)),
+                                 '--manifest', str(self.manifest), '--source', str(self.source),
+                                 '--check', str(link)], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Installed root must not be a symlink', result.stderr)
 
     def test_changed_patch_requires_new_reviewed_digest(self):
         self.patch.write_text(self.patch.read_text().replace('patched safe', 'unexpected'))
