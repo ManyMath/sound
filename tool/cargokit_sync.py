@@ -127,7 +127,9 @@ def compare(expected, installed):
         target = safe_file(installed, name)
         if not target.is_file() or target.read_bytes() != (expected / name).read_bytes():
             raise ValueError(f'Installed Cargokit drift: {name}')
-        if (target.stat().st_mode & 0o111) != ((expected / name).stat().st_mode & 0o111):
+        # Git records executable vs non-executable, not group/other access.
+        # A runner umask of077 legitimately checks out100755 as0700.
+        if bool(target.stat().st_mode & 0o100) != bool((expected / name).stat().st_mode & 0o100):
             # Windows does not preserve POSIX executable modes.
             import os
             if os.name != 'nt':

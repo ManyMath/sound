@@ -22,6 +22,7 @@ class SyncTests(unittest.TestCase):
         self.source.mkdir()
         self.git(self.source, 'init', '-q')
         (self.source / 'build.sh').write_text('safe build\n')
+        (self.source / 'build.sh').chmod(0o755)
         (self.source / 'omitted.lock').write_text('fixture omitted\n')
         self.git(self.source, 'add', '.')
         self.git(self.source, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'Fixture')
@@ -29,7 +30,7 @@ class SyncTests(unittest.TestCase):
         self.patch = self.root / 'local.patch'
         self.patch.write_text('--- a/build.sh\n+++ b/build.sh\n@@ -1 +1 @@\n-safe build\n+patched safe build\n')
         self.recipe = {'schema': 1, 'repository': 'fixture-only', 'revision': revision,
-                       'files': {'build.sh': {'mode': '100644', 'sha256': sync.digest(b'safe build\n')}},
+                       'files': {'build.sh': {'mode': self.git(self.source, 'ls-tree', 'HEAD', 'build.sh').split()[0], 'sha256': sync.digest(b'safe build\n')}},
                        'omitted_files': {'omitted.lock': 'Fixture export policy'},
                        'patches': [{'file': 'local.patch', 'sha256': sync.digest(self.patch.read_bytes()), 'description': 'Fixture local change'}],
                        'expected_files_sha256': {'build.sh': sync.digest(b'patched safe build\n'), '.vendored-revision': sync.digest((revision+'\n').encode())}}
@@ -104,6 +105,20 @@ class SyncTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'drift'):
             sync.compare(self.output, installed)
         self.assertEqual((installed / 'build.sh').read_text(), 'uncommitted local change\n')
+
+    def test_restrictive_umask_preserves_git_executable_identity(self):
+        import os
+        if os.name == 'nt':
+            self.skipTest('POSIX executable bits do not apply on Windows')
+        self.build()
+        installed = self.root / 'installed'
+        shutil.copytree(self.output, installed)
+        self.git(installed, 'init', '-q')
+        (installed / 'build.sh').chmod(0o700)
+        sync.compare(self.output, installed)
+        (installed / 'build.sh').chmod(0o600)
+        with self.assertRaisesRegex(ValueError, 'executable mode drift'):
+            sync.compare(self.output, installed)
 
     def test_extra_unignored_source_is_rejected(self):
         self.build()
