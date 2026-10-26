@@ -24,6 +24,15 @@ jobs:
           PRIMARY_SERVER: ${{ github.server_url }}
         run: test "$PRIMARY_SERVER" = 'https://git.manymath.com'
       - uses: actions/checkout@v4
+      - name: Rebuild exact tooling identity from private fork
+        env:
+          GIT_SSH_COMMAND: /usr/bin/ssh -o Hostname=195.201.108.115 -p 2222 -l git -o ProxyCommand=none -o ProxyJump=none
+          GIT_SSH_VARIANT: ssh
+        run: |
+          source_root="$(mktemp -d)"
+          trap 'rm -rf "$source_root"' EXIT
+          git -c core.hooksPath=/dev/null clone --quiet --no-checkout ssh://git@git.manymath.com:2222/sneurlax/cargokit.git "$source_root/fork"
+          python3 tool/cargokit_sync.py --manifest tool/cargokit/manifest.json --source "$source_root/fork" --check packages/sound_flutter/cargokit
       - name: Record provisioned tools
         run: |
           python3 --version
