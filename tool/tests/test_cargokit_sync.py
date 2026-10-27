@@ -21,14 +21,16 @@ class SyncTests(unittest.TestCase):
         self.source = self.root / 'source'
         self.source.mkdir()
         self.git(self.source, 'init', '-q')
-        (self.source / 'build.sh').write_text('safe build\n')
+        # Bytes, not text: text mode writes CRLF on Windows, which changes the
+        # hashed fixture content and the patch git apply must match.
+        (self.source / 'build.sh').write_bytes(b'safe build\n')
         (self.source / 'build.sh').chmod(0o755)
-        (self.source / 'omitted.lock').write_text('fixture omitted\n')
+        (self.source / 'omitted.lock').write_bytes(b'fixture omitted\n')
         self.git(self.source, 'add', '.')
         self.git(self.source, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'Fixture')
         revision = self.git(self.source, 'rev-parse', 'HEAD').strip()
         self.patch = self.root / 'local.patch'
-        self.patch.write_text('--- a/build.sh\n+++ b/build.sh\n@@ -1 +1 @@\n-safe build\n+patched safe build\n')
+        self.patch.write_bytes(b'--- a/build.sh\n+++ b/build.sh\n@@ -1 +1 @@\n-safe build\n+patched safe build\n')
         self.recipe = {'schema': 1, 'repository': 'fixture-only', 'revision': revision,
                        'files': {'build.sh': {'mode': self.git(self.source, 'ls-tree', 'HEAD', 'build.sh').split()[0], 'sha256': sync.digest(b'safe build\n')}},
                        'omitted_files': {'omitted.lock': 'Fixture export policy'},
@@ -55,6 +57,15 @@ class SyncTests(unittest.TestCase):
         self.assertFalse((self.output / 'omitted.lock').exists())
         self.assertFalse((self.output / '.git').exists())
 
+    def test_autocrlf_does_not_rewrite_patched_bytes(self):
+        # Git for Windows defaults to core.autocrlf=true; reproduce it anywhere.
+        import os
+        from unittest.mock import patch
+        autocrlf = {'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'core.autocrlf', 'GIT_CONFIG_VALUE_0': 'true'}
+        with patch.dict(os.environ, autocrlf):
+            self.build()
+        self.assertEqual((self.output / 'build.sh').read_bytes(), b'patched safe build\n')
+
     def test_provenance_keeps_full_identity_and_visible_archive_subset(self):
         provenance = self.build()
         self.assertIn('.vendored-revision', provenance['installed_files_sha256'])
@@ -76,7 +87,7 @@ class SyncTests(unittest.TestCase):
         self.assertIn('Installed root must not be a symlink', result.stderr)
 
     def test_changed_patch_requires_new_reviewed_digest(self):
-        self.patch.write_text(self.patch.read_text().replace('patched safe', 'unexpected'))
+        self.patch.write_bytes(self.patch.read_bytes().replace(b'patched safe', b'unexpected'))
         with self.assertRaisesRegex(ValueError, 'Local patch identity'):
             self.build()
 

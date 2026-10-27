@@ -89,11 +89,16 @@ def materialize(recipe_path, source, output):
         # A fresh administrative directory prevents git apply from discovering
         # a parent checkout. Git rejects patch paths outside this staging tree.
         subprocess.run(['git', 'init', '-q', str(output)], check=True)
+        # Patch exact bytes. Otherwise core.autocrlf (the Git for Windows
+        # default) or global attributes rewrite patched files with CRLF.
+        (output / '.git' / 'info').mkdir(exist_ok=True)
+        (output / '.git' / 'info' / 'attributes').write_bytes(b'* -text\n')
         subprocess.run(['git', '-C', str(output), 'apply', '--check', str(patch_path.resolve())], check=True)
         subprocess.run(['git', '-C', str(output), 'apply', str(patch_path.resolve())], check=True)
     if (output / '.git').exists():
         shutil.rmtree(output / '.git')
-    (output / '.vendored-revision').write_text(revision + '\n')
+    # Generated files are hashed, so write LF bytes rather than platform text.
+    (output / '.vendored-revision').write_bytes((revision + '\n').encode())
     actual_files = {}
     for path in output.rglob('*'):
         if path.is_symlink():
@@ -114,7 +119,7 @@ def materialize(recipe_path, source, output):
                   'publication_omitted_hidden_files': sorted(name for name in actual_files
                                    if any(part.startswith('.') for part in PurePosixPath(name).parts)),
                   'omitted_files': recipe['omitted_files']}
-    (output / PROVENANCE).write_text(json.dumps(provenance, indent=2, sort_keys=True) + '\n')
+    (output / PROVENANCE).write_bytes((json.dumps(provenance, indent=2, sort_keys=True) + '\n').encode())
     return provenance
 
 
