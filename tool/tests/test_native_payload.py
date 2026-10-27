@@ -29,6 +29,56 @@ class PayloadTests(unittest.TestCase):
             self.assertEqual(invoke.call_args.args[0], ["C:/SDK/bin/dart.bat", "--version"])
             self.assertFalse(invoke.call_args.kwargs.get("shell", False))
 
+    def test_windows_children_use_real_toolchain_binaries(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(gate, "os", SimpleNamespace(name="nt", environ=gate.os.environ)), patch.object(gate.shutil, "which", return_value="C:/SDK/bin/dart.bat"), patch.object(gate.subprocess, "run", return_value=CompletedProcess([], 0, "ok")) as invoke:
+                gate.run(["dart", "--version"], tmp, Path(tmp) / "version.log", {"PATH": "C:/SDK/bin"})
+            self.assertEqual(invoke.call_args.kwargs["env"]["RUSTUP_WINDOWS_PATH_ADD_BIN"], "1")
+
+    def test_explicit_empty_child_environment_is_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(gate.shutil, "which", return_value="/sdk/dart"), patch.object(gate.subprocess, "run", return_value=CompletedProcess([], 0, "ok")) as invoke:
+                gate.run(["dart", "--version"], tmp, Path(tmp) / "version.log", {})
+            self.assertNotIn("PATH", invoke.call_args.kwargs["env"])
+
+    def test_runtime_library_keeps_legacy_linux_config(self):
+        self.assertEqual(gate.runtime_library({"library_name": "libdemo.so"}, "linux"),
+                         {"name": "libdemo.so", "bundle_dir": "bundle/lib"})
+        self.assertIsNone(gate.runtime_library({"library_name": "libdemo.so"}, "windows"))
+
+    def test_runtime_library_per_target(self):
+        config = {"runtime_libraries": {"windows": {"name": "demo.dll", "bundle_dir": "runner/Debug"}}}
+        self.assertEqual(gate.runtime_library(config, "windows")["name"], "demo.dll")
+        self.assertIsNone(gate.runtime_library(config, "apk"))
+
+    def test_bundled_library_matches_only_the_bundle_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            consumer = Path(tmp)
+            for directory in ["build/windows/x64/runner/Debug", "build/windows/x64/plugins/demo/Debug"]:
+                (consumer / directory).mkdir(parents=True)
+                (consumer / directory / "demo.dll").write_bytes(b"dll")
+            library = {"name": "demo.dll", "bundle_dir": "runner/Debug"}
+            with patch.object(gate.shutil, "which", return_value=None):
+                found = gate.bundled_library(consumer, "windows", library)
+            self.assertEqual(found, consumer / "build/windows/x64/runner/Debug/demo.dll")
+            (consumer / "build/windows/x64/runner/Debug/copy").mkdir()
+            (consumer / "build/windows/x64/runner/Debug/copy/demo.dll").write_bytes(b"dll")
+            (consumer / "build/windows/arm64/runner/Debug").mkdir(parents=True)
+            (consumer / "build/windows/arm64/runner/Debug/demo.dll").write_bytes(b"dll")
+            with self.assertRaisesRegex(RuntimeError, "exactly one"):
+                gate.bundled_library(consumer, "windows", library)
+
+    def test_windows_refuses_same_named_library_on_path(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            consumer = Path(tmp)
+            (consumer / "build/windows/x64/runner/Debug").mkdir(parents=True)
+            (consumer / "build/windows/x64/runner/Debug/demo.dll").write_bytes(b"dll")
+            with patch.object(gate, "os", SimpleNamespace(name="nt", environ={"PATH": "C:/elsewhere"})), patch.object(gate.shutil, "which", return_value="C:/elsewhere/demo.dll"):
+                with self.assertRaisesRegex(RuntimeError, "on PATH"):
+                    gate.bundled_library(consumer, "windows", {"name": "demo.dll", "bundle_dir": "runner/Debug"})
+
     def test_missing_native_source(self):
         with self.assertRaisesRegex(ValueError, "Missing published source"):
             gate.inspect_package(FIXTURES / "missing-source", {"required": ["rust/Cargo.toml"]})

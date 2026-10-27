@@ -19,9 +19,15 @@ import tomllib
 
 
 def run(args, cwd, log, env=None):
+    env = dict(os.environ if env is None else env)
+    if os.name == "nt":
+        # rustup proxies may be user-created symlinks, which processes that
+        # enforce redirection trust refuse to start (os error 448). Cargokit's
+        # `rustup run` then puts the toolchain's real rustc first on PATH.
+        env.setdefault("RUSTUP_WINDOWS_PATH_ADD_BIN", "1")
     # CreateProcess does not apply PATHEXT like a Windows shell. Resolve the
     # SDK's dart.bat/flutter.bat without relying on shell executable search.
-    executable = shutil.which(args[0], path=(env or os.environ).get("PATH"))
+    executable = shutil.which(args[0], path=env.get("PATH"))
     if executable is None:
         raise RuntimeError(f"Required executable not found: {args[0]}")
     result = subprocess.run([executable, *args[1:]], cwd=cwd, env=env,
@@ -146,6 +152,32 @@ def required_rust_targets(config, target, machine=None):
     return [value.replace("{host_arch}", arch or "") for value in configured]
 
 
+def runtime_library(config, target):
+    """Bundled native library for a Flutter build target, or None without a smoke.
+
+    `bundle_dir` is the library's directory suffix under build/<target>. Older
+    configs name only the Linux library.
+    """
+    libraries = config.get("runtime_libraries") or {
+        "linux": {"name": config["library_name"], "bundle_dir": "bundle/lib"}}
+    return libraries.get(target)
+
+
+def bundled_library(consumer, target, library):
+    """The single bundled copy of `library`, refusing a same-named one on PATH."""
+    # Compare path parts, not strings: Windows paths use backslashes.
+    bundle_dir = tuple(library["bundle_dir"].split("/"))
+    matches = list((consumer / "build" / target).rglob(library["name"]))
+    bundled = [p for p in matches if p.parent.parts[-len(bundle_dir):] == bundle_dir]
+    if len(bundled) != 1:
+        raise RuntimeError(f"Expected exactly one bundled native library, found {bundled}")
+    # The loaders fall back to the bare library name; a copy on PATH could
+    # then pass the smoke without loading the bundled file.
+    if os.name == "nt" and shutil.which(library["name"], path=os.environ.get("PATH")):
+        raise RuntimeError(f"{library['name']} is on PATH; the smoke could load it instead of the bundle")
+    return bundled[0]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
@@ -224,11 +256,11 @@ def main():
     report["flutter_build"] = "passed"
     # Per-repository smoke program explicitly loads the native library and
     # tests minimal behavior without requiring a physical capture device.
-    if args.target == "linux":
-        matches = list((consumer / "build/linux").rglob(config["library_name"]))
-        bundled = [p for p in matches if "/bundle/lib/" in str(p)]
-        if len(bundled) != 1:
-            raise RuntimeError(f"Expected exactly one bundled native library, found {bundled}")
+    library = runtime_library(config, args.target)
+    if library is not None:
+        bundled = [bundled_library(consumer, args.target, library)]
+        report["native_library"] = {"path": bundled[0].relative_to(consumer).as_posix(),
+                                    "sha256": hashlib.sha256(bundled[0].read_bytes()).hexdigest()}
         if config.get("flutter_runtime_command"):
             bundle = bundled[0].parent.parent
             if config.get("relocate_flutter_bundle", False):
@@ -256,7 +288,7 @@ def main():
             run(["dart", "pub", "get"], cli, output / "dart-get.log")
             env = dict(os.environ, **{config["library_environment"]: str(bundled[0])})
             if config.get("copy_library_to_cli", False):
-                copied = cli / config["library_name"]
+                copied = cli / bundled[0].name
                 shutil.copy2(bundled[0], copied)
                 env[config["library_environment"]] = str(copied)
             for source, destination in config.get("smoke_files", {}).items():
