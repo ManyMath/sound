@@ -1,0 +1,5 @@
+# Cargokit is vendored byte-for-byte and pinned by SHA-256 in
+# tool/cargokit/manifest.json and VENDOR_PROVENANCE.json. Never convert its line
+# endings, so Windows checkouts (core.autocrlf) keep the reviewed bytes.
+packages/sound_flutter/cargokit/** -text
+tool/cargokit/** -text
