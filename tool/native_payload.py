@@ -173,7 +173,8 @@ def bundled_library(consumer, target, library):
         raise RuntimeError(f"Expected exactly one bundled native library, found {bundled}")
     # The loaders fall back to the bare library name; a copy on PATH could
     # then pass the smoke without loading the bundled file.
-    if os.name == "nt" and shutil.which(library["name"], path=os.environ.get("PATH")):
+    # F_OK: Windows which() otherwise only tries PATHEXT names, never ".dll".
+    if os.name == "nt" and shutil.which(library["name"], mode=os.F_OK, path=os.environ.get("PATH")):
         raise RuntimeError(f"{library['name']} is on PATH; the smoke could load it instead of the bundle")
     return bundled[0]
 

@@ -21,13 +21,16 @@ def main():
     if evidence.get("status") != "passed" or evidence.get("mode") != "candidate" or spec is None:
         raise RuntimeError("Requires a successful exact-archive candidate for a target with a runtime smoke")
     library = bundled_library(candidate / "flutter-consumer", target, spec).resolve()
+    native_sha256 = hashlib.sha256(library.read_bytes()).hexdigest()
+    if evidence.get("native_library", {}).get("sha256") != native_sha256:
+        raise RuntimeError("Bundled library does not match the candidate evidence")
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     (output / "pubspec.yaml").write_text("name: hosted_sound_compatibility\nenvironment:\n  sdk: ^3.10.0\ndependencies:\n  sound_dart: 0.0.1\n")
     (output / "main.dart").write_text(config["dart_main"])
     run(["dart", "pub", "get"], output, output / "pub-get.log")
     run(["dart", "run", "main.dart"], output, output / "native-smoke.log", dict(os.environ, SOUND_DART_LIB=str(library)))
-    result = {"status": "passed", "target": target, "scope":"Hosted sound_dart 0.0.1 with exact candidate native library; no Flutter dependency override", "source_revision": evidence["source_revision"], "source_dirty": evidence["source_dirty"], "native_sha256": hashlib.sha256(library.read_bytes()).hexdigest(), "candidate_archives": evidence["archives"]}
+    result = {"status": "passed", "target": target, "scope": "Hosted sound_dart 0.0.1 with exact candidate native library; no Flutter dependency override", "source_revision": evidence["source_revision"], "source_dirty": evidence["source_dirty"], "native_sha256": native_sha256, "candidate_archives": evidence["archives"]}
     (output / "evidence.json").write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result, indent=2))
 

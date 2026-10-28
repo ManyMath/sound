@@ -70,12 +70,17 @@ class PayloadTests(unittest.TestCase):
                 gate.bundled_library(consumer, "windows", library)
 
     def test_windows_refuses_same_named_library_on_path(self):
+        import os
         from types import SimpleNamespace
         with tempfile.TemporaryDirectory() as tmp:
             consumer = Path(tmp)
             (consumer / "build/windows/x64/runner/Debug").mkdir(parents=True)
             (consumer / "build/windows/x64/runner/Debug/demo.dll").write_bytes(b"dll")
-            with patch.object(gate, "os", SimpleNamespace(name="nt", environ={"PATH": "C:/elsewhere"})), patch.object(gate.shutil, "which", return_value="C:/elsewhere/demo.dll"):
+            # A real PATH entry: which() must find a non-executable ".dll" too.
+            elsewhere = consumer / "elsewhere"
+            elsewhere.mkdir()
+            (elsewhere / "demo.dll").write_bytes(b"dll")
+            with patch.object(gate, "os", SimpleNamespace(name="nt", F_OK=os.F_OK, environ={"PATH": str(elsewhere)})):
                 with self.assertRaisesRegex(RuntimeError, "on PATH"):
                     gate.bundled_library(consumer, "windows", {"name": "demo.dll", "bundle_dir": "runner/Debug"})
 
