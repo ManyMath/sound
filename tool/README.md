@@ -27,13 +27,22 @@ builds. Consumer-local Cargokit options disable downloaded/local prebuilts and
 cached native builds so this verifies source compilation.
 
 Linux smoke asserts the exact loaded library using /proc/self/maps and verifies
-native player creation, an idle loaded WAV handle and disposal. The current
+native player creation, an idle loaded WAV handle and disposal. `--target windows`
+runs the same smoke against the bundled `runner/Debug/sound_cli.dll`: the process
+module list must contain exactly that file, a same-named DLL on PATH is refused,
+and a synthetic WAV must decode to exact PCM through the C ABI. No audio device is
+opened. The evidence records the library path and SHA256, and
+`hosted_dart_smoke.py` accepts that Windows candidate. The current
 candidate decodes at load; hosted 0.0.1 delays decoding until playback. This is
 not evidence of speaker output, hardware interruption handling, or microphone
 mixing. Native and Dart regressions exercise those hardware-independent seams.
 
 `--target macos` and `--target windows` require the preprovisioned host Rust target;
-unknown targets or missing tools fail before any installer. Linux CI runs all
+unknown targets or missing tools fail before any installer. On Windows the gate sets
+RUSTUP_WINDOWS_PATH_ADD_BIN=1 for its children only: rustup proxies installed as
+symlinks cannot be started by processes that enforce redirection trust (os error
+448). `.gitattributes` keeps the hash-pinned Cargokit bytes LF under
+core.autocrlf; other text files in such a checkout are archived with CRLF. Linux CI runs all
 native tests, source analysis/tests, Web JS compile, example build, signing-key
 fixtures and the actual-archive candidate plus legacy hosted Dart consumer. Android/iOS and Windows/macOS builds
 remain explicit fleet verification requirements; the legacy GitHub workflow
