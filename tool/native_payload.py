@@ -195,7 +195,11 @@ def main():
     version = run(["dart", "--version"], repo, output / "dart-version.log")
     if f"Dart SDK version: {config['dart_sdk']} " not in version:
         raise ValueError(f"Unsupported Dart SDK for hidden archive flag: {version.strip()}")
-    if config.get("rust_toolchain"):
+    build_env = None
+    if args.target == "apk":
+        import android_payload as android_gate
+        build_env = android_gate.prepare(config, repo, output, run)
+    if config.get("rust_toolchain") and args.target != "apk":
         channel = config["rust_toolchain"]
         installed = run(["rustup", "toolchain", "list"], repo, output / "rust-toolchains.log")
         if not any(line.split()[0] == channel or line.split()[0].startswith(channel + "-") for line in installed.splitlines()):
@@ -253,7 +257,11 @@ def main():
     manifest.write_text(text)
     (consumer / "lib/main.dart").write_text(config["flutter_main"])
     run(["flutter", "pub", "get"], consumer, output / "flutter-get.log")
-    run(["flutter", "build", args.target, "--debug"] + (["--no-codesign"] if args.target == "ios" else []), consumer, output / "flutter-build.log")
+    if args.target == "apk":
+        android_gate.configure_consumer(consumer, config, build_env, output, run)
+    run(["flutter", "build", args.target, "--debug"] + (["--no-codesign"] if args.target == "ios" else []), consumer, output / "flutter-build.log", env=build_env)
+    if args.target == "apk":
+        report["android_artifact"] = android_gate.artifact(consumer, config)
     report["flutter_build"] = "passed"
     # Per-repository smoke program explicitly loads the native library and
     # tests minimal behavior without requiring a physical capture device.

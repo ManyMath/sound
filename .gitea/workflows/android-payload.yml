@@ -1,0 +1,58 @@
+name: Private Android native payload build
+'on':
+  push:
+    branches: [maintenance/android-payload]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  DASH__SUPPRESS_ANALYTICS: 'true'
+  FLUTTER_SUPPRESS_ANALYTICS: 'true'
+  CI: 'true'
+  DO_NOT_TRACK: '1'
+  CARGO_BUILD_JOBS: '3'
+jobs:
+  android:
+    runs-on: manymath-maintenance-linux-x64
+    timeout-minutes: 90
+    steps:
+      - name: Require the private primary forge
+        env:
+          PRIMARY_SERVER: ${{ github.server_url }}
+        run: test "$PRIMARY_SERVER" = 'https://git.manymath.com'
+      - uses: actions/checkout@v4
+      - name: Android preflight regression fixtures
+        run: python3 -m unittest discover -s tool/tests -p test_android_payload.py -v
+      - name: Actual pub archives and three-ABI Android consumer
+        env:
+          ANDROID_SDK_ROOT: /home/user/Android/Sdk
+          ANDROID_HOME: /home/user/Android/Sdk
+          PAYLOAD_REPOSITORY: ${{ github.repository }}
+          JAVA_HOME: /home/user/dev/android-studio-2025.2.3.8-linux/android-studio/jbr
+        run: |
+          set -euo pipefail
+          python3 -c 'import shutil, sys; sys.exit(0 if shutil.disk_usage(".").free >= 16 * 1024**3 else "Need 16 GiB free for isolated Android build")'
+          task_root="$(mktemp -d "$RUNNER_TEMP/android-build.XXXXXXXX")"
+          durable_root="$HOME/.local/share/manymath-maintenance/evidence/$PAYLOAD_REPOSITORY"
+          mkdir -p "$durable_root"
+          evidence_root="$(mktemp -d "$durable_root/android-evidence.XXXXXXXX")"
+          export CARGO_HOME="$task_root/cargo" PUB_CACHE="$task_root/pub"
+          export GRADLE_USER_HOME="$task_root/gradle" ANDROID_USER_HOME="$task_root/android"
+          trap 'rm -rf -- "$task_root" "$evidence_root/candidate/flutter-consumer/build"' EXIT
+          python3 tool/native_payload.py --config tool/payload.json --mode candidate --target apk --output "$evidence_root/candidate"
+          python3 - "$evidence_root/candidate" <<'PYCODE'
+          import hashlib, json, shutil, sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          report = json.loads((root / 'evidence.json').read_text())
+          if report['source_dirty']:
+              raise RuntimeError('Committed Android gate source must be clean')
+          artifact = report['android_artifact']
+          source = root / 'flutter-consumer' / artifact['path']
+          destination = root / 'app-debug.apk'
+          shutil.copy2(source, destination)
+          if hashlib.sha256(destination.read_bytes()).hexdigest() != artifact['sha256']:
+              raise RuntimeError('Retained APK hash mismatch')
+          print(json.dumps(report, indent=2))
+          PYCODE
+          echo "Private Android archives, APK identities and build logs retained at $evidence_root"

@@ -51,6 +51,11 @@
     ],
     "windows": [
       "{host_arch}-pc-windows-msvc"
+    ],
+    "apk": [
+      "aarch64-linux-android",
+      "armv7-linux-androideabi",
+      "x86_64-linux-android"
     ]
   },
   "runtime_libraries": {
@@ -62,5 +67,17 @@
       "name": "sound_cli.dll",
       "bundle_dir": "runner/Debug"
     }
+  },
+  "android": {
+    "rust_toolchain": "stable",
+    "ndk": "28.2.13676358",
+    "platform": "android-36",
+    "build_tools": "36.0.0",
+    "library": "libsound_cli.so",
+    "apk_abis": [
+      "arm64-v8a",
+      "armeabi-v7a",
+      "x86_64"
+    ]
   }
 }
